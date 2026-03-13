@@ -3,8 +3,9 @@
 Supports:
 - Ollama (local, free, default for testing — uses tinyllama)
 - OpenAI (cloud, production — uses gpt-4o-mini)
+- Groq (fast cloud inference — uses llama-3.3-70b-versatile)
 
-Swap via config: LLM_PROVIDER=ollama or LLM_PROVIDER=openai
+Swap via config: LLM_PROVIDER=ollama, openai, or groq
 """
 
 import logging
@@ -140,6 +141,60 @@ class OpenAIProvider(LLMProvider):
             return [0.0] * 1536
 
 
+class GroqProvider(LLMProvider):
+    """Groq cloud inference — fast, OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        chat_model: str = "llama-3.3-70b-versatile",
+    ):
+        self.api_key = api_key
+        self.chat_model = chat_model
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                from openai import AsyncOpenAI
+                self._client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url="https://api.groq.com/openai/v1",
+                )
+            except Exception as e:
+                logger.error(f"Groq client init failed: {e}")
+        return self._client
+
+    async def chat(self, messages: list[dict], temperature: float = 0.3) -> str:
+        """Call Groq chat completion (OpenAI-compatible)."""
+        client = self._get_client()
+        if client is None:
+            return "[Groq unavailable] Set GROQ_API_KEY in .env"
+
+        try:
+            response = await client.chat.completions.create(
+                model=self.chat_model,
+                messages=messages,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Groq chat failed: {e}")
+            return f"[LLM Error] {str(e)}"
+
+    async def embed(self, text: str) -> list[float]:
+        """Groq doesn't support embeddings — uses Ollama as fallback."""
+        try:
+            fallback = OllamaProvider(
+                base_url=settings.ollama_base_url,
+                embed_model=settings.ollama_embed_model,
+            )
+            return await fallback.embed(text)
+        except Exception as e:
+            logger.warning(f"Groq embed fallback failed: {e}")
+            return [0.0] * 1536
+
+
 # ── Factory ──
 
 _provider: Optional[LLMProvider] = None
@@ -150,7 +205,13 @@ def get_llm_provider() -> LLMProvider:
     global _provider
     if _provider is None:
         provider_name = settings.llm_provider.lower()
-        if provider_name == "openai":
+        if provider_name == "groq":
+            _provider = GroqProvider(
+                api_key=settings.groq_api_key,
+                chat_model=settings.groq_chat_model,
+            )
+            logger.info(f"LLM Provider: Groq ({settings.groq_chat_model})")
+        elif provider_name == "openai":
             _provider = OpenAIProvider(
                 chat_model=settings.chat_model,
                 embed_model=settings.embedding_model,

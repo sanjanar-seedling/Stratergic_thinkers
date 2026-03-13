@@ -22,13 +22,15 @@ class VoiceTranscriptionWorker:
 
     def __init__(
         self,
-        provider: str = "openai",  # "openai" or "local"
+        provider: str = "groq",  # "groq", "openai", or "local"
         openai_api_key: Optional[str] = None,
+        groq_api_key: Optional[str] = None,
         redis_url: str = "redis://localhost:6379",
         stream_name: str = "seedlings:events",
     ):
         self.provider = provider
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         self.redis_url = redis_url
         self.stream_name = stream_name
         self._redis_client = None
@@ -40,6 +42,53 @@ class VoiceTranscriptionWorker:
                 self.redis_url, decode_responses=True
             )
         return self._redis_client
+
+    async def transcribe_groq(
+        self,
+        audio_file_path: str,
+        language: Optional[str] = None,
+    ) -> dict:
+        """Transcribe audio using Groq Whisper API (OpenAI-compatible).
+
+        Returns:
+            {
+                "text": "transcribed text",
+                "language": "en",
+                "duration": 45.2,
+            }
+        """
+        if not self.groq_api_key:
+            raise ValueError("Groq API key not configured")
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                with open(audio_file_path, "rb") as audio_file:
+                    files = {"file": audio_file}
+                    data = {
+                        "model": os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo"),
+                        "response_format": "verbose_json",
+                    }
+                    if language:
+                        data["language"] = language
+
+                    response = await client.post(
+                        "https://api.groq.com/openai/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {self.groq_api_key}"},
+                        files=files,
+                        data=data,
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+
+                    return {
+                        "text": result.get("text", "").strip(),
+                        "language": result.get("language", "unknown"),
+                        "duration": result.get("duration", 0),
+                    }
+
+        except Exception as e:
+            logger.error(f"Groq transcription failed: {e}")
+            raise
 
     async def transcribe_openai(
         self,
@@ -141,7 +190,9 @@ class VoiceTranscriptionWorker:
             Event ID
         """
         # Transcribe
-        if self.provider == "openai":
+        if self.provider == "groq":
+            transcription = await self.transcribe_groq(audio_file_path)
+        elif self.provider == "openai":
             transcription = await self.transcribe_openai(audio_file_path)
         else:
             transcription = await self.transcribe_local(audio_file_path)
@@ -217,7 +268,7 @@ if __name__ == "__main__":
     import asyncio
 
     # Example usage
-    worker = VoiceTranscriptionWorker(provider="openai")
+    worker = VoiceTranscriptionWorker(provider="groq")
 
     async def run():
         event_id = await worker.process_audio_file(

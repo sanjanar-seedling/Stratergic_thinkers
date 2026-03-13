@@ -42,12 +42,12 @@ OAUTH_CONFIGS = {
     "slack": {
         "auth_url": "https://slack.com/oauth/v2/authorize",
         "token_url": "https://slack.com/api/oauth.v2.access",
-        "scopes": "channels:history,chat:write,users:read",
+        "scopes": "channels:history,chat:write,groups:history,im:history",
     },
     "discord": {
         "auth_url": "https://discord.com/api/oauth2/authorize",
         "token_url": "https://discord.com/api/oauth2/token",
-        "scopes": "identify guilds messages.read",
+        "scopes": "identify guilds",
     },
     "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -139,6 +139,21 @@ async def get_auth_url(
             detail=f"{service} OAuth not configured. Set {service.upper()}_CLIENT_ID in .env",
         )
 
+    # Discord: use bot invite URL with OAuth2 user identity for linking
+    if service == "discord":
+        params = {
+            "client_id": client_id,
+            "redirect_uri": _get_redirect_uri(service),
+            "response_type": "code",
+            "scope": config["scopes"],
+            "state": service,
+            # Bot permissions: Read Messages/View Channels (1024) + Read Message History (65536)
+            "permissions": "68608",
+            "integration_type": "0",
+        }
+        auth_url = f"{config['auth_url']}?{urlencode(params)}"
+        return {"auth_url": auth_url}
+
     params = {
         "client_id": client_id,
         "redirect_uri": _get_redirect_uri(service),
@@ -182,22 +197,60 @@ async def oauth_callback(
 
     try:
         async with httpx.AsyncClient() as client:
+            token_payload = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": data.code,
+                "redirect_uri": _get_redirect_uri(service),
+                "grant_type": "authorization_code",
+            }
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
             response = await client.post(
                 config["token_url"],
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": data.code,
-                    "redirect_uri": _get_redirect_uri(service),
-                    "grant_type": "authorization_code",
-                },
-                headers={"Accept": "application/json"},
+                data=token_payload,
+                headers=headers,
             )
-            response.raise_for_status()
             token_data = response.json()
+            logger.info(f"OAuth {service} token response status={response.status_code} body={token_data}")
+
+            if response.status_code >= 400:
+                error_detail = token_data.get("error_description") or token_data.get("error") or str(token_data)
+                raise HTTPException(status_code=400, detail=f"{service} token exchange failed: {error_detail}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"OAuth token exchange failed for {service}: {e}")
         raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+
+    logger.info(f"OAuth token response for {service}: {list(token_data.keys())}")
+
+    # Slack returns {"ok": false, "error": "..."} with 200 status
+    if service == "slack":
+        if not token_data.get("ok"):
+            error_msg = token_data.get("error", "unknown error")
+            logger.error(f"Slack OAuth error: {error_msg}")
+            raise HTTPException(status_code=400, detail=f"Slack authorization failed: {error_msg}")
+        access_token = token_data.get("access_token") or token_data.get("authed_user", {}).get("access_token", "")
+    elif service == "discord":
+        # Discord bot OAuth returns guild info + user access token
+        # The bot token from .env is used for reading messages; the user token just confirms identity
+        access_token = token_data.get("access_token", "")
+        guild = token_data.get("guild", {})
+        if guild:
+            logger.info(f"Discord bot added to guild: {guild.get('name')} ({guild.get('id')})")
+        # If no user access token but guild was added, that's still a success — we use the bot token
+        if not access_token and guild:
+            access_token = f"bot-connected-guild:{guild.get('id', 'unknown')}"
+    else:
+        access_token = token_data.get("access_token", "")
+
+    # Validate we actually got a token
+    if not access_token:
+        logger.error(f"No access token received from {service}. Response keys: {list(token_data.keys())}")
+        raise HTTPException(status_code=400, detail=f"No access token received from {service}. Authorization may have been denied.")
 
     # Store integration (replace existing if any)
     _integrations[:] = [
@@ -208,13 +261,13 @@ async def oauth_callback(
     _integrations.append({
         "user_id": current_user["id"],
         "service": service,
-        "access_token": token_data.get("access_token", ""),
+        "access_token": access_token,
         "refresh_token": token_data.get("refresh_token", ""),
         "scopes": config["scopes"],
         "connected_at": datetime.utcnow().isoformat(),
     })
 
-    logger.info(f"User {current_user['id']} connected {service}")
+    logger.info(f"User {current_user['id']} connected {service} (token length: {len(access_token)})")
     return {"status": "connected", "service": service}
 
 
@@ -269,7 +322,9 @@ async def sync_integrations(
         access_token = integration.get("access_token", "")
 
         try:
+            logger.info(f"Syncing {service} (token: {access_token[:10]}...)")
             texts = await _fetch_texts_from_service(service, access_token)
+            logger.info(f"Sync {service}: got {len(texts)} texts")
         except Exception as e:
             logger.error(f"Sync failed for {service}: {e}")
             errors.append({"service": service, "error": str(e)})
@@ -279,18 +334,20 @@ async def sync_integrations(
             services_synced.append(service)
             continue
 
+        uid = current_user["id"]
         for text in texts:
             scrubbed_text = full_scrub(text)
             event_id = str(uuid.uuid4())
             new_event = {
                 "id": event_id,
+                "user_id": uid,
                 "source": "google_calendar" if service == "google" else service,
                 "event_type": "reflection",
                 "scrubbed_text": scrubbed_text,
                 "context": {"synced_from": service},
                 "created_at": datetime.utcnow().isoformat(),
             }
-            _events.insert(0, new_event)
+            _events.setdefault(uid, []).insert(0, new_event)
             events_created += 1
 
             try:
@@ -369,35 +426,55 @@ async def _fetch_slack_messages(access_token: str) -> list[str]:
 
 
 async def _fetch_discord_messages(access_token: str) -> list[str]:
-    """Fetch recent messages from Discord DM channels."""
+    """Fetch recent messages from Discord guild channels using the bot token.
+
+    The bot must be invited to the guild with Read Messages + Read Message History permissions.
+    The user OAuth token is only used to identify guild membership; the bot token does the reading.
+    """
     import httpx
 
+    bot_token = settings.discord_bot_token
+    if not bot_token:
+        logger.warning("DISCORD_BOT_TOKEN not set — cannot read guild messages")
+        return []
+
     texts = []
-    headers = {"Authorization": f"Bearer {access_token}"}
+    bot_headers = {"Authorization": f"Bot {bot_token}"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # Get user's DM channels
+        # Get guilds the bot is in
         resp = await client.get(
-            "https://discord.com/api/v10/users/@me/channels",
-            headers=headers,
+            "https://discord.com/api/v10/users/@me/guilds",
+            headers=bot_headers,
         )
         if resp.status_code != 200:
-            logger.warning(f"Discord channels error: {resp.status_code}")
+            logger.warning(f"Discord guilds error: {resp.status_code} {resp.text}")
             return []
 
-        channels = resp.json()[:3]  # Limit to 3 DM channels
-        for channel in channels:
-            msgs = await client.get(
-                f"https://discord.com/api/v10/channels/{channel['id']}/messages",
-                headers=headers,
-                params={"limit": 5},
+        guilds = resp.json()[:3]  # Limit to 3 guilds
+        for guild in guilds:
+            # Get text channels in guild
+            ch_resp = await client.get(
+                f"https://discord.com/api/v10/guilds/{guild['id']}/channels",
+                headers=bot_headers,
             )
-            if msgs.status_code != 200:
+            if ch_resp.status_code != 200:
                 continue
-            for msg in msgs.json():
-                content = msg.get("content", "").strip()
-                if content and len(content) > 10:
-                    texts.append(content)
+
+            # Filter to text channels (type 0) and limit
+            text_channels = [c for c in ch_resp.json() if c.get("type") == 0][:5]
+            for channel in text_channels:
+                msgs = await client.get(
+                    f"https://discord.com/api/v10/channels/{channel['id']}/messages",
+                    headers=bot_headers,
+                    params={"limit": 10},
+                )
+                if msgs.status_code != 200:
+                    continue
+                for msg in msgs.json():
+                    content = msg.get("content", "").strip()
+                    if content and len(content) > 10 and not msg.get("bot"):
+                        texts.append(content)
 
     logger.info(f"Discord sync: fetched {len(texts)} messages")
     return texts

@@ -133,7 +133,7 @@ async def resolve_decision(decision_id: str, resolution: DecisionResolve, curren
 
 @router.post("/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(audio: UploadFile = File(...), language: str = None):
-    """Transcribe audio using OpenAI Whisper API or local fallback.
+    """Transcribe audio using Groq Whisper, OpenAI Whisper, or local fallback.
 
     Language parameter is optional — omit for auto-detection (language agnostic).
     """
@@ -141,19 +141,41 @@ async def transcribe_audio(audio: UploadFile = File(...), language: str = None):
     size_mb = len(audio_bytes) / (1024 * 1024)
     logger.info(f"Received audio file: {audio.filename}, size: {size_mb:.2f}MB")
 
-    # Try OpenAI Whisper API first
-    if settings.openai_api_key:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+    import tempfile, os
+    ext = audio.filename.rsplit(".", 1)[-1] if audio.filename and "." in audio.filename else "webm"
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
 
-            import tempfile, os
-            ext = audio.filename.rsplit(".", 1)[-1] if audio.filename and "." in audio.filename else "webm"
-            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
-
+    try:
+        # Try Groq Whisper first (fast, free tier available)
+        if settings.groq_api_key:
             try:
+                from openai import OpenAI
+                client = OpenAI(
+                    api_key=settings.groq_api_key,
+                    base_url="https://api.groq.com/openai/v1",
+                )
+                kwargs = {
+                    "model": settings.groq_whisper_model,
+                    "file": open(tmp_path, "rb"),
+                }
+                if language:
+                    kwargs["language"] = language
+
+                transcript = client.audio.transcriptions.create(**kwargs)
+                return TranscriptionResponse(
+                    text=transcript.text,
+                    duration_seconds=size_mb * 30,
+                )
+            except Exception as e:
+                logger.error(f"Groq Whisper transcription failed: {e}")
+
+        # Fallback to OpenAI Whisper
+        if settings.openai_api_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=settings.openai_api_key)
                 kwargs = {"model": "whisper-1", "file": open(tmp_path, "rb")}
                 if language:
                     kwargs["language"] = language
@@ -161,20 +183,20 @@ async def transcribe_audio(audio: UploadFile = File(...), language: str = None):
                 transcript = client.audio.transcriptions.create(**kwargs)
                 return TranscriptionResponse(
                     text=transcript.text,
-                    duration_seconds=size_mb * 30,  # rough estimate
+                    duration_seconds=size_mb * 30,
                 )
-            finally:
-                os.unlink(tmp_path)
-        except Exception as e:
-            logger.error(f"OpenAI Whisper transcription failed: {e}")
+            except Exception as e:
+                logger.error(f"OpenAI Whisper transcription failed: {e}")
 
-    # Fallback: return informative stub
-    logger.warning("No OpenAI API key configured — returning transcription stub")
-    return TranscriptionResponse(
-        text="[Transcription requires OPENAI_API_KEY in .env] "
-             "Audio received successfully. Set your API key to enable real transcription.",
-        duration_seconds=size_mb * 30,
-    )
+        # No API key configured
+        logger.warning("No transcription API key configured — returning stub")
+        return TranscriptionResponse(
+            text="[Transcription requires GROQ_API_KEY or OPENAI_API_KEY in .env] "
+                 "Audio received successfully. Set your API key to enable real transcription.",
+            duration_seconds=size_mb * 30,
+        )
+    finally:
+        os.unlink(tmp_path)
 
 
 # ── Sparring ──

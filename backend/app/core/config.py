@@ -1,5 +1,11 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+# Find .env in current dir or project root
+_env_file = Path(".env")
+if not _env_file.exists():
+    _env_file = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
@@ -20,13 +26,18 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-key-change-in-production"
     access_token_expire_minutes: int = 60 * 24  # 24 hours
 
-    # LLM Provider: "ollama" (local/free) or "openai" (cloud)
-    llm_provider: str = "ollama"
+    # LLM Provider: "ollama" (local/free), "openai" (cloud), or "groq" (fast cloud)
+    llm_provider: str = "groq"
 
     # OpenAI (used when llm_provider = "openai")
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"
+
+    # Groq (used when llm_provider = "groq")
+    groq_api_key: str = ""
+    groq_chat_model: str = "llama-3.3-70b-versatile"
+    groq_whisper_model: str = "whisper-large-v3-turbo"
 
     # Ollama (used when llm_provider = "ollama")
     ollama_base_url: str = "http://localhost:11434"
@@ -42,28 +53,29 @@ class Settings(BaseSettings):
     # OAuth — Slack
     slack_client_id: str = ""
     slack_client_secret: str = ""
-    slack_redirect_uri: str = "http://localhost:5173/oauth/callback"
+    slack_redirect_uri: str = "https://localhost:5173/oauth/callback"
 
     # OAuth — Discord
     discord_client_id: str = ""
     discord_client_secret: str = ""
-    discord_redirect_uri: str = "http://localhost:5173/oauth/callback"
+    discord_redirect_uri: str = "https://localhost:5173/oauth/callback"
+    discord_bot_token: str = ""
 
     # OAuth — Google (Calendar + Gmail)
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:5173/oauth/callback"
+    google_redirect_uri: str = "https://localhost:5173/oauth/callback"
 
     # Email Ingestion
     imap_server: str = "imap.gmail.com"
     email_address: str = ""
     email_password: str = ""
 
-    # Voice Transcription
-    whisper_provider: str = "openai"  # "openai" or "local"
+    # Voice Transcription: "groq", "openai", or "local"
+    whisper_provider: str = "groq"
 
     class Config:
-        env_file = ".env"
+        env_file = str(_env_file)
         env_file_encoding = "utf-8"
         extra = "ignore"  # Ignore extra fields in .env
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,8 +10,13 @@ export function OAuthCallbackPage() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [message, setMessage] = useState("");
   const navigate = useNavigate();
+  const exchangedRef = useRef(false);
 
   useEffect(() => {
+    // Guard against StrictMode double-fire — OAuth codes are single-use
+    if (exchangedRef.current) return;
+    exchangedRef.current = true;
+
     const handleCallback = async () => {
       const code = searchParams.get("code");
       const state = searchParams.get("state"); // contains service name

@@ -21,7 +21,7 @@ Frictionless ingestion is a core priority of Seedlings.
 
 ### 4. The AI Cognitive Engines
 The intelligence of the platform is modularized into dedicated engine classes:
-- **LLM Provider Abstraction (`llm_provider.py`)**: A swappable interface supporting both OpenAI (Cloud, `gpt-4o-mini`) and Ollama (Local/Air-gapped, `aya-expanse:8b`).
+- **LLM Provider Abstraction (`llm_provider.py`)**: A swappable interface supporting Groq (Cloud, `llama-3.3-70b-versatile`, default), OpenAI (Cloud, `gpt-4o-mini`), and Ollama (Local/Air-gapped, `tinyllama`).
 - **Pattern Engine (`pattern_engine.py`)**: Analyzes ingested events to identify cognitive biases (e.g., Confirmation Bias, Avoidance, Sunk Cost Fallacy) over a rolling window.
 - **Judgment Tracker (`judgment_tracker.py`)**: Computes the Brier score and accuracy metrics by comparing the founder's initial "Expected Outcome" and "Confidence Level" of a Decision against the "Actual Outcome".
 - **State-Aware Prompter (`state_aware_prompter.py`)**: Injects the founder's established psychological "Safety/Threat Mode" and recent context into AI system prompts, ensuring responses are deeply personalized.
@@ -30,7 +30,7 @@ The intelligence of the platform is modularized into dedicated engine classes:
 ### 5. Zero-Trust Security Execution
 Seedlings provides an optional local-only, zero-trust mode:
 1.  **Frontend Encryption**: Web Crypto API (AES-GCM) encrypts reflections on the client device. The backend stores the cipher.
-2.  **Local LLM Execution**: Uses Ollama with standard `GGUF` model weights (e.g. `aya-expanse:8b`, `tinyllama`) executed directly on the host hardware (CPU/GPU) without leaving the machine.
+2.  **Local LLM Execution**: Uses Ollama with standard `GGUF` model weights (e.g. `tinyllama`, `nomic-embed-text`) executed directly on the host hardware (CPU/GPU) without leaving the machine.
 3.  **Local PII Engine**: spaCy and Presidio execute locally, removing identifying markers before prompt compilation.
 
 ## Data Flow Diagram
@@ -46,6 +46,6 @@ graph TD
     
     UI -->|Log Decision| Decisions[Decision Router]
     Decisions --> Spar[Adversarial Sparring]
-    Spar --> LLM[Ollama/OpenAI]
+    Spar --> LLM[Groq/OpenAI/Ollama]
     Worker --> LLM
 ```

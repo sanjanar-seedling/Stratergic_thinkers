@@ -45,6 +45,7 @@ def _regex_strip_pii(text: str) -> str:
 
     Covers: email addresses, phone numbers, US SSNs, credit card numbers,
     and capitalised proper-noun sequences (likely names).
+    Each distinct person gets a unique numbered identifier (PERSON_1, PERSON_2, etc.).
     """
     import re
 
@@ -65,10 +66,58 @@ def _regex_strip_pii(text: str) -> str:
 
     # Capitalised proper-noun runs (2-4 consecutive Title-Case words not at sentence start)
     # e.g. "John Smith", "Mary Jane Watson"
+    # Each distinct name gets a unique numbered identifier.
+    person_map: dict[str, int] = {}
+    person_counter = 0
+
+    def _replace_person(match):
+        nonlocal person_counter
+        name = match.group(1)
+        if name not in person_map:
+            person_counter += 1
+            person_map[name] = person_counter
+        return f'<PERSON_{person_map[name]}>'
+
     text = re.sub(
         r'(?<!\. )(?<!\n)\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b',
-        '<PERSON>', text,
+        _replace_person, text,
     )
+
+    return text
+
+
+def _anonymize_with_unique_ids(text: str, results: list) -> str:
+    """Replace detected PII entities with uniquely numbered placeholders.
+
+    For entity types that can appear multiple times referring to different
+    real-world entities (PERSON, ORGANIZATION, LOCATION), each distinct
+    surface form gets a stable counter (e.g. PERSON_1, PERSON_2).
+    Other entity types use a flat label (e.g. <EMAIL_ADDRESS>).
+    """
+    # Entity types that should receive unique numbering
+    numbered_types = {"PERSON", "ORGANIZATION", "LOCATION"}
+
+    # Map: entity_type -> {surface_text -> counter}
+    counters: dict[str, dict[str, int]] = {}
+
+    # Sort results by start position descending so replacements don't shift offsets
+    sorted_results = sorted(results, key=lambda r: r.start, reverse=True)
+
+    for result in sorted_results:
+        original = text[result.start:result.end]
+        entity_type = result.entity_type
+
+        if entity_type in numbered_types:
+            if entity_type not in counters:
+                counters[entity_type] = {}
+            type_map = counters[entity_type]
+            if original not in type_map:
+                type_map[original] = len(type_map) + 1
+            placeholder = f"<{entity_type}_{type_map[original]}>"
+        else:
+            placeholder = f"<{entity_type}>"
+
+        text = text[:result.start] + placeholder + text[result.end:]
 
     return text
 
@@ -109,9 +158,9 @@ def strip_pii(text: str, language: str = "en") -> str:
         if not results:
             return text
 
-        anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+        anonymized = _anonymize_with_unique_ids(text, results)
         logger.debug(f"Presidio stripped {len(results)} PII entities")
-        return anonymized.text
+        return anonymized
 
     except Exception as e:
         logger.error(f"Presidio PII stripping failed: {e} — falling back to regex")

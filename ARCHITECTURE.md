@@ -148,7 +148,7 @@ Ingestion Workers → Redis Stream → Event Processor → Analysis Engines → 
 - **Framework**: FastAPI (Python 3.11+)
 - **Database**: PostgreSQL (with asyncpg)
 - **Cache/Queue**: Redis (with Streams)
-- **LLM Provider**: Swappable (Ollama for local/free, OpenAI for production)
+- **LLM Provider**: Swappable (Groq for default cloud inference, OpenAI for production, Ollama for local/air-gapped)
 - **Encryption**: `cryptography` library
 - **Authentication**: JWT tokens
 
@@ -199,8 +199,9 @@ DATABASE_URL=postgresql+asyncpg://seedlings:seedlings_dev_2024@localhost:5432/se
 REDIS_URL=redis://localhost:6379
 
 # LLM Provider ("ollama" or "openai")
-LLM_PROVIDER=ollama
-OPENAI_API_KEY=  # Only if using OpenAI
+LLM_PROVIDER=groq  # "groq", "openai", or "ollama"
+GROQ_API_KEY=      # Required if using Groq (default)
+OPENAI_API_KEY=    # Required if using OpenAI
 
 # Security
 SECRET_KEY=your-secret-key-here
@@ -235,28 +236,32 @@ python backend/app/services/event_processor.py
 ## API Endpoints
 
 ### Authentication
-- `POST /api/auth/register` - Create account
+- `POST /api/auth/signup` - Create account
 - `POST /api/auth/login` - Get JWT token
+- `GET /api/auth/me` - Get current user profile
 
 ### Events
 - `POST /api/events` - Submit new event (web interface)
 - `GET /api/events` - List user events
 - `GET /api/events/{id}` - Get event details
 
-### Insights
+### Insights (Planned — not yet implemented in API layer)
 - `GET /api/insights/patterns` - Get detected patterns
 - `GET /api/insights/biases` - Get cognitive biases
 - `GET /api/insights/drift` - Get time allocation drift
 
-### Interventions
+### Interventions (Planned — not yet implemented in API layer)
 - `GET /api/interventions` - Get pending interventions
 - `POST /api/interventions/{id}/respond` - Respond to intervention
 
+### Dashboard
+- `GET /api/dashboard/stats` - Get decision metrics
+- `GET /api/dashboard/biases` - Get detected biases
+- `GET /api/dashboard/growth` - Get growth trajectory
+
 ### Privacy
-- `GET /api/privacy/settings` - Get privacy settings
-- `PUT /api/privacy/settings` - Update privacy settings
-- `POST /api/privacy/export` - Export all data
-- `DELETE /api/privacy/delete` - Delete all data
+- `GET /api/privacy/export` - Export all data
+- `DELETE /api/privacy/data` - Delete all data
 
 ## Roadmap
 
