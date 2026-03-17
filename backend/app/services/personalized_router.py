@@ -145,9 +145,18 @@ class PersonalizedInferenceRouter:
                 should_train = await self.should_personalize(user_id)
                 if should_train:
                     logger.info(f"User {user_id} has enough data for personalization")
-                    # Trigger async training (don't block current request)
-                    # TODO: Use background task queue (Celery, etc.)
-                    # await self.trigger_personalization_training(user_id)
+                    # Trigger async training via Redis task queue (don't block current request)
+                    try:
+                        import redis as redis_lib
+                        from datetime import datetime
+                        redis_client = redis_lib.from_url("redis://localhost:6379", decode_responses=True)
+                        redis_client.xadd(
+                            "personalization_tasks",
+                            {"user_id": user_id, "action": "train_lora", "timestamp": str(datetime.utcnow())}
+                        )
+                        logger.info(f"Personalization training task queued for user {user_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to queue personalization training: {e}")
 
         # Use base model
         logger.info(f"Using base model for user {user_id}")

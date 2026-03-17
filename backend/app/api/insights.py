@@ -209,16 +209,36 @@ async def get_time_drift(
         return []
 
     # Extract stated priorities from review
-    # TODO: Parse from review text or structured data
+    # Parse from review context or extract from text if structured
+    import re
     stated_priorities = latest_review.context.get("priorities", {})
+    if not stated_priorities and latest_review.scrubbed_text:
+        # Simple extraction of priorities mentioned in text (e.g., "priority: product, fundraising")
+        priority_match = re.search(r'priority[s]?[\s:]+([^\n]+)', latest_review.scrubbed_text, re.IGNORECASE)
+        if priority_match:
+            priorities_text = priority_match.group(1)
+            for priority in priorities_text.split(","):
+                category = priority.strip().lower()
+                if category:
+                    stated_priorities[category] = stated_priorities.get(category, 0) + 1
 
     # Calculate actual time from calendar events
-    # TODO: Aggregate from time_allocation events
+    # Aggregate time allocations from all time_allocation events
     actual_time = {}
+    event_count = 0
     for event in time_data:
         category_dist = event.context.get("category_distribution", {})
-        for category, percentage in category_dist.items():
-            actual_time[category] = actual_time.get(category, 0) + percentage
+        if category_dist:
+            for category, percentage in category_dist.items():
+                actual_time[category] = actual_time.get(category, 0) + percentage
+        else:
+            # If no category distribution, track event count for averaging
+            event_count += 1
+    
+    # Average out multiple events if distribution data exists
+    if time_data and actual_time:
+        for category in actual_time:
+            actual_time[category] = actual_time[category] / len(time_data)
 
     # Normalize actual_time
     total = sum(actual_time.values())
@@ -357,8 +377,35 @@ async def respond_to_intervention(
     intervention.status = InterventionStatus.RESPONDED
     intervention.responded_at = datetime.utcnow()
 
-    # TODO: Create a new FounderEvent from the response
-    # TODO: Trigger follow-up analysis
+    # Create a new FounderEvent from the response for analysis
+    response_event = FounderEvent(
+        user_id=current_user["id"],
+        source="web",
+        event_type="reflection",
+        scrubbed_text=response.response_text,
+        context={
+            "intervention_id": str(intervention_id),
+            "response_to": intervention.prompt_text,
+            "auto_generated": False,
+        },
+    )
+    db.add(response_event)
+    
+    # Queue follow-up analysis via Redis
+    try:
+        import redis as redis_lib
+        redis_client = redis_lib.from_url("redis://localhost:6379", decode_responses=True)
+        redis_client.xadd(
+            "analysis_tasks",
+            {
+                "user_id": str(current_user["id"]),
+                "event_id": str(response_event.id),
+                "action": "analyze_intervention_response",
+            }
+        )
+        logger.info(f"Follow-up analysis queued for intervention response: {intervention_id}")
+    except Exception as e:
+        logger.warning(f"Failed to queue follow-up analysis: {e}")
 
     await db.commit()
 

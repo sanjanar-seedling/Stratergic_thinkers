@@ -208,8 +208,23 @@ class DataAnonymization:
             anonymized = anonymized.replace(phone, pseudonym)
             mapping[pseudonym] = phone
 
-        # Names (placeholder - requires NER in production)
-        # TODO: Integrate spaCy or similar for proper NER
+        # Names using spaCy NER for proper entity recognition
+        try:
+            import spacy
+            nlp = spacy.load("en_core_web_sm")
+            doc = nlp(text)
+            name_count = 0
+            for ent in doc.ents:
+                if ent.label_ in ("PERSON", "ORG"):
+                    pseudonym = f"{ent.label_.lower()}_{name_count+1}"
+                    if ent.text not in mapping.values():
+                        anonymized = anonymized.replace(ent.text, pseudonym)
+                        mapping[pseudonym] = ent.text
+                        name_count += 1
+        except ImportError:
+            logger.debug("spaCy not available, skipping NER")
+        except Exception as e:
+            logger.debug(f"NER failed: {e}, continuing with basic anonymization")
 
         return anonymized, mapping
 

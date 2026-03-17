@@ -231,7 +231,20 @@ class EventProcessor:
                                             recent_context=anonymized_text
                                         )
                                         logger.info(f"Generated Intervention -> {prompt.question}")
-                                        # TODO: Push intervention to user (e.g. via WebSocket or Slack DM)
+                                        # Push intervention to Redis for queued delivery
+                                        try:
+                                            redis = self._get_redis()
+                                            intervention_payload = {
+                                                "user_id": str(event.user_id),
+                                                "intervention_id": prompt.id,
+                                                "prompt": prompt.question,
+                                                "context": prompt.context,
+                                                "timestamp": datetime.utcnow().isoformat(),
+                                            }
+                                            redis.xadd(f"interventions:{event.user_id}", intervention_payload)
+                                            logger.info(f"Intervention queued for delivery: {prompt.id}")
+                                        except Exception as e:
+                                            logger.warning(f"Failed to queue intervention delivery: {e}")
                                     except Exception as e:
                                         logger.error(f"Failed to generate intervention: {e}")
 

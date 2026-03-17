@@ -135,7 +135,20 @@ class PrivacyController:
         if priority_levels.get(priority, 0) < priority_levels.get(prefs.priority_threshold, 1):
             return False
 
-        # TODO: Check max_per_day from database
+        # Check max_per_day limit from user preferences
+        max_per_day = getattr(prefs, "max_notifications_per_day", 10)
+        if max_per_day and max_per_day > 0:
+            # Count notifications sent today using in-memory cache
+            from datetime import date, timedelta
+            today_str = str(date.today())
+            if not hasattr(self, "_daily_notification_count"):
+                self._daily_notification_count = {}
+            key = f"{user_id}:{today_str}"
+            current_count = self._daily_notification_count.get(key, 0)
+            if current_count >= max_per_day:
+                logger.info(f"User {user_id} has reached max notifications per day ({max_per_day})")
+                return False
+            self._daily_notification_count[key] = current_count + 1
 
         return True
 
