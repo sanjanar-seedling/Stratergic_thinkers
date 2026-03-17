@@ -91,8 +91,8 @@ python workers/email_ingestion/worker.py
 # Voice transcription
 python workers/voice_transcription/worker.py
 
-# Slack/Discord webhooks
-cd workers/slack_discord
+# Slack webhooks
+cd workers/slack
 uvicorn worker:app --port 8001
 ```
 

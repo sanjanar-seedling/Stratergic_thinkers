@@ -19,7 +19,6 @@ const SERVICE_CONFIG: Record<
   { label: string; color: string; icon: string }
 > = {
   slack: { label: "Slack", color: "bg-[#4A154B]", icon: "#" },
-  discord: { label: "Discord", color: "bg-[#5865F2]", icon: "🎮" },
   google: { label: "Google Calendar", color: "bg-[#4285F4]", icon: "📅" },
   gmail: { label: "Gmail", color: "bg-[#EA4335]", icon: "✉️" },
 };

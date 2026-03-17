@@ -1,4 +1,4 @@
-"""Integration OAuth Routes — Slack, Discord, Google Calendar, Gmail.
+"""Integration OAuth Routes — Slack, Google Calendar, Gmail.
 
 Each service follows the same pattern:
 1. GET /integrations/{service}/auth-url → returns OAuth authorization URL
@@ -44,11 +44,6 @@ OAUTH_CONFIGS = {
         "token_url": "https://slack.com/api/oauth.v2.access",
         "scopes": "channels:history,chat:write,groups:history,im:history,channels:read,groups:read,im:read,mpim:read",
     },
-    "discord": {
-        "auth_url": "https://discord.com/api/oauth2/authorize",
-        "token_url": "https://discord.com/api/oauth2/token",
-        "scopes": "identify guilds",
-    },
     "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
@@ -66,7 +61,6 @@ def _get_client_id(service: str) -> str:
     """Get client ID for a service from config."""
     mapping = {
         "slack": settings.slack_client_id,
-        "discord": settings.discord_client_id,
         "google": settings.google_client_id,
         "gmail": settings.google_client_id,
     }
@@ -77,7 +71,6 @@ def _get_client_secret(service: str) -> str:
     """Get client secret for a service from config."""
     mapping = {
         "slack": settings.slack_client_secret,
-        "discord": settings.discord_client_secret,
         "google": settings.google_client_secret,
         "gmail": settings.google_client_secret,
     }
@@ -88,7 +81,6 @@ def _get_redirect_uri(service: str) -> str:
     """Get redirect URI for a service from config."""
     mapping = {
         "slack": settings.slack_redirect_uri,
-        "discord": settings.discord_redirect_uri,
         "google": settings.google_redirect_uri,
         "gmail": settings.google_redirect_uri,
     }
@@ -138,21 +130,6 @@ async def get_auth_url(
             status_code=400,
             detail=f"{service} OAuth not configured. Set {service.upper()}_CLIENT_ID in .env",
         )
-
-    # Discord: use bot invite URL with OAuth2 user identity for linking
-    if service == "discord":
-        params = {
-            "client_id": client_id,
-            "redirect_uri": _get_redirect_uri(service),
-            "response_type": "code",
-            "scope": config["scopes"],
-            "state": service,
-            # Bot permissions: Read Messages/View Channels (1024) + Read Message History (65536)
-            "permissions": "68608",
-            "integration_type": "0",
-        }
-        auth_url = f"{config['auth_url']}?{urlencode(params)}"
-        return {"auth_url": auth_url}
 
     params = {
         "client_id": client_id,
@@ -234,16 +211,6 @@ async def oauth_callback(
             logger.error(f"Slack OAuth error: {error_msg}")
             raise HTTPException(status_code=400, detail=f"Slack authorization failed: {error_msg}")
         access_token = token_data.get("access_token") or token_data.get("authed_user", {}).get("access_token", "")
-    elif service == "discord":
-        # Discord bot OAuth returns guild info + user access token
-        # The bot token from .env is used for reading messages; the user token just confirms identity
-        access_token = token_data.get("access_token", "")
-        guild = token_data.get("guild", {})
-        if guild:
-            logger.info(f"Discord bot added to guild: {guild.get('name')} ({guild.get('id')})")
-        # If no user access token but guild was added, that's still a success — we use the bot token
-        if not access_token and guild:
-            access_token = f"bot-connected-guild:{guild.get('id', 'unknown')}"
     else:
         access_token = token_data.get("access_token", "")
 
@@ -376,8 +343,6 @@ async def _fetch_texts_from_service(service: str, access_token: str) -> list[str
 
     if service == "slack":
         return await _fetch_slack_messages(access_token)
-    elif service == "discord":
-        return await _fetch_discord_messages(access_token)
     elif service == "gmail":
         return await _fetch_gmail_snippets(access_token)
     elif service == "google":
@@ -422,61 +387,6 @@ async def _fetch_slack_messages(access_token: str) -> list[str]:
                     texts.append(text)
 
     logger.info(f"Slack sync: fetched {len(texts)} messages")
-    return texts
-
-
-async def _fetch_discord_messages(access_token: str) -> list[str]:
-    """Fetch recent messages from Discord guild channels using the bot token.
-
-    The bot must be invited to the guild with Read Messages + Read Message History permissions.
-    The user OAuth token is only used to identify guild membership; the bot token does the reading.
-    """
-    import httpx
-
-    bot_token = settings.discord_bot_token
-    if not bot_token:
-        logger.warning("DISCORD_BOT_TOKEN not set — cannot read guild messages")
-        return []
-
-    texts = []
-    bot_headers = {"Authorization": f"Bot {bot_token}"}
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        # Get guilds the bot is in
-        resp = await client.get(
-            "https://discord.com/api/v10/users/@me/guilds",
-            headers=bot_headers,
-        )
-        if resp.status_code != 200:
-            logger.warning(f"Discord guilds error: {resp.status_code} {resp.text}")
-            return []
-
-        guilds = resp.json()[:3]  # Limit to 3 guilds
-        for guild in guilds:
-            # Get text channels in guild
-            ch_resp = await client.get(
-                f"https://discord.com/api/v10/guilds/{guild['id']}/channels",
-                headers=bot_headers,
-            )
-            if ch_resp.status_code != 200:
-                continue
-
-            # Filter to text channels (type 0) and limit
-            text_channels = [c for c in ch_resp.json() if c.get("type") == 0][:5]
-            for channel in text_channels:
-                msgs = await client.get(
-                    f"https://discord.com/api/v10/channels/{channel['id']}/messages",
-                    headers=bot_headers,
-                    params={"limit": 10},
-                )
-                if msgs.status_code != 200:
-                    continue
-                for msg in msgs.json():
-                    content = msg.get("content", "").strip()
-                    if content and len(content) > 10 and not msg.get("bot"):
-                        texts.append(content)
-
-    logger.info(f"Discord sync: fetched {len(texts)} messages")
     return texts
 
 

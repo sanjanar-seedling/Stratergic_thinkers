@@ -31,7 +31,7 @@ The architecture is organized around five system metaphors:
 
 | Metaphor | Function | Code Location |
 |----------|----------|---------------|
-| **Ears** | Multi-modal ingestion — email, voice, Slack, Discord, Google Calendar, Gmail | `workers/` |
+| **Ears** | Multi-modal ingestion — email, voice, Slack, Google Calendar, Gmail | `workers/` |
 | **Eyes** | Document/image ingestion via OCR and file uploads | `workers/ocr/` |
 | **Brain** | Cognitive analysis engines — pattern recognition, bias detection, state tracking, RAG | `backend/app/services/` |
 | **Voice** | Active sparring partner — adversarial challenges, interventions, Socratic questioning | `backend/app/services/adversarial_sparring.py`, `inference_router.py` |
@@ -134,7 +134,6 @@ Source: `backend/app/api/integrations.py`
 | Service | Authorization URL | Token URL | Scopes | Special Handling |
 |---|---|---|---|---|
 | Slack | `https://slack.com/oauth/v2/authorize` | `https://slack.com/api/oauth.v2.access` | `channels:history,chat:write,groups:history,im:history` | Token URL returns `{"ok": false, "error": "..."}` with HTTP 200 on failure; must check `ok` field (line 205-209) |
-| Discord | `https://discord.com/api/oauth2/authorize` | `https://discord.com/api/oauth2/token` | `identify guilds messages.read` | Standard OAuth2 code exchange |
 | Google Calendar | `https://accounts.google.com/o/oauth2/v2/auth` | `https://oauth2.googleapis.com/token` | `https://www.googleapis.com/auth/calendar.readonly` | Adds `access_type=offline` and `prompt=consent` for refresh token (line 151-153) |
 | Gmail | `https://accounts.google.com/o/oauth2/v2/auth` | `https://oauth2.googleapis.com/token` | `https://www.googleapis.com/auth/gmail.readonly` | Same Google OAuth with different scope; shares `GOOGLE_CLIENT_ID` |
 
@@ -192,7 +191,7 @@ Tokens are stored as **plaintext strings in an in-memory Python list**. Storage 
 ```python
 {
     "user_id": str,           # From JWT
-    "service": str,           # "slack" | "discord" | "google" | "gmail"
+    "service": str,           # "slack" | "google" | "gmail"
     "access_token": str,      # Plaintext OAuth access token
     "refresh_token": str,     # Plaintext refresh token (Google only)
     "scopes": str,            # Granted scopes
@@ -209,7 +208,6 @@ Tokens are stored as **plaintext strings in an in-memory Python list**. Storage 
 | Service | API Endpoints Called | Data Extracted | Limits |
 |---|---|---|---|
 | Slack | `conversations.list` (types=im), `conversations.history` | DM message text | 3 channels, 5 msgs/channel, min 10 chars |
-| Discord | `/users/@me/channels`, `/channels/{id}/messages` | DM message content | 3 channels, 5 msgs/channel, min 10 chars |
 | Gmail | `gmail/v1/users/me/messages` (list + get) | Subject + snippet | 10 emails, inbox, newer_than:7d |
 | Google Calendar | `calendar/v3/calendars/primary/events` | Event summary | 20 events, last 7 days |
 
@@ -718,16 +716,15 @@ Source: `workers/email_ingestion/worker.py`
   - Context: `@context: board meeting` → `context` field
   - Subject prefix: `[DECISION]`, `[WEEKLY]`, `[REFLECTION]` → event type
 
-### 8.3 Slack/Discord Webhook Worker
+### 8.3 Slack Webhook Worker
 
-Source: `workers/slack_discord/worker.py`
+Source: `workers/slack/worker.py`
 
 **Framework**: Standalone FastAPI app (webhook server)
 
 | Webhook | Verification | Event Extraction |
 |---|---|---|
 | Slack (`POST /webhook/slack`) | HMAC-SHA256 via `X-Slack-Request-Timestamp` + `X-Slack-Signature` + `SLACK_SIGNING_SECRET` | `client_msg_id`, `text`, `channel`, `user`, `ts` |
-| Discord (`POST /webhook/discord`) | Ping verification (type=1) | `id`, `content`, `author`, `channel_id` |
 
 All events created with `event_type="reflection"`.
 
@@ -765,7 +762,7 @@ Source: `frontend/src/`
 | `/sparring` | SparringPage | Yes | Multi-turn adversarial sparring with Devil's Advocate persona |
 | `/dashboard` | DashboardPage | Yes | KPI cards, growth trajectory chart, bias frequency bar chart, thinking profile radar |
 | `/privacy` | PrivacyPage | Yes | Privacy zones, processing preferences, data export/delete |
-| `/settings` | SettingsPage | Yes | Profile, integration connections (Slack/Discord/Google/Gmail), notification preferences |
+| `/settings` | SettingsPage | Yes | Profile, integration connections (Slack/Google/Gmail), notification preferences |
 
 ### 9.2 State Management
 

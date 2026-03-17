@@ -34,7 +34,7 @@ class FounderEvent(BaseModel):
     id: str = Field(..., description="Unique event identifier")
     source: str = Field(
         ...,
-        description="Input source: email, slack, discord, voice, web",
+        description="Input source: email, slack, voice, web",
     )
     event_type: str = Field(
         ...,
@@ -53,7 +53,7 @@ class FounderEvent(BaseModel):
 
     @validator("source")
     def validate_source(cls, v):
-        allowed = ["email", "slack", "discord", "voice", "web", "google_calendar"]
+        allowed = ["email", "slack", "voice", "web", "google_calendar"]
         if v not in allowed:
             raise ValueError(f"Invalid source: {v}. Must be one of {allowed}")
         return v

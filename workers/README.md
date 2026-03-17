@@ -14,8 +14,8 @@ workers/
 │   └── worker.py          # IMAP email polling and parsing
 ├── voice_transcription/
 │   └── worker.py          # Audio transcription via OpenAI Whisper
-├── slack_discord/
-│   └── worker.py          # Slack & Discord webhook ingestion (FastAPI)
+├── slack/
+│   └── worker.py          # Slack webhook ingestion (FastAPI)
 ├── google_workspace/
 │   └── worker.py          # Google Calendar & Gmail integration
 ├── ocr/
@@ -29,7 +29,7 @@ workers/
 |---|---|---|---|
 | Email Ingestion | `EmailIngestionWorker` | `process_inbox()`, `_detect_event_type()`, `_extract_metadata()` | IMAP inbox (unread emails) |
 | Voice Transcription | `VoiceTranscriptionWorker` | `process_audio_file()`, `transcribe_openai()`, `transcribe_local()` | Audio files (mp3, m4a, wav) |
-| Slack & Discord | FastAPI `app` | `slack_webhook()`, `discord_webhook()`, `verify_slack_signature()` | Slack/Discord webhook payloads |
+| Slack | FastAPI `app` | `slack_webhook()`, `verify_slack_signature()` | Slack webhook payloads |
 | Google Workspace | `GoogleWorkspaceWorker` | `fetch_calendar_events()`, `fetch_recent_gmail_snippets()`, `analyze_time_allocation()`, `detect_heavy_execution_phase()` | Google Calendar & Gmail APIs |
 | OCR | `OCRWorker` | `upload_file()`, `extract_text()`, `extract_text_from_bytes()` | Uploaded PDFs, images, text files (S3/MinIO) |
 
@@ -53,7 +53,7 @@ All workers emit events in this normalized format:
 }
 ```
 
-Supported `source` values: `email`, `voice`, `slack`, `discord`.
+Supported `source` values: `email`, `voice`, `slack`.
 Supported `event_type` values: `reflection`, `decision_record`, `weekly_review`.
 
 ## ⚙️ Configuration
@@ -64,8 +64,7 @@ Supported `event_type` values: `reflection`, `decision_record`, `weekly_review`.
 | `EMAIL_ADDRESS` | Email Ingestion | Email account to poll |
 | `EMAIL_PASSWORD` | Email Ingestion | Email account password or app password |
 | `OPENAI_API_KEY` | Voice Transcription | OpenAI API key for Whisper transcription |
-| `SLACK_SIGNING_SECRET` | Slack & Discord | Slack app signing secret for webhook verification |
-| `DISCORD_PUBLIC_KEY` | Slack & Discord | Discord app public key for webhook verification |
+| `SLACK_SIGNING_SECRET` | Slack | Slack app signing secret for webhook verification |
 | `GOOGLE_CLIENT_ID` | Google Workspace | OAuth 2.0 client ID |
 | `GOOGLE_CLIENT_SECRET` | Google Workspace | OAuth 2.0 client secret |
 | `S3_ENDPOINT` | OCR | S3-compatible endpoint (default: `http://localhost:9000`) |
@@ -84,8 +83,8 @@ IMAP_SERVER=imap.gmail.com EMAIL_ADDRESS=you@example.com EMAIL_PASSWORD=secret \
 # Voice Transcription
 OPENAI_API_KEY=sk-... python -m workers.voice_transcription.worker
 
-# Slack & Discord (FastAPI server)
-uvicorn workers.slack_discord.worker:app --host 0.0.0.0 --port 8001
+# Slack (FastAPI server)
+uvicorn workers.slack.worker:app --host 0.0.0.0 --port 8001
 
 # Google Workspace (imported as a module by the backend)
 # Usage: from workers.google_workspace.worker import google_worker

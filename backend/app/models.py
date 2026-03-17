@@ -74,7 +74,6 @@ class EventSource(str, enum.Enum):
     """Event source enumeration."""
     EMAIL = "email"
     SLACK = "slack"
-    DISCORD = "discord"
     VOICE = "voice"
     WEB = "web"
     GOOGLE_CALENDAR = "google_calendar"

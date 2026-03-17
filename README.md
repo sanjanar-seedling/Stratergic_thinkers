@@ -71,7 +71,7 @@ pytest --cov=app --cov-report=html
 
 ## ✨ Key Features
 
-✅ **Multi-modal ingestion** (email, voice, Slack, Discord, calendar)
+✅ **Multi-modal ingestion** (email, voice, Slack, calendar)
 ✅ **Pattern recognition** (cognitive biases, decision frameworks)
 ✅ **RAG pipeline** with strategic framework library
 ✅ **Intelligent interventions** with Socratic questioning
@@ -100,7 +100,7 @@ student-project/
 ├── workers/               # Ingestion workers
 │   ├── email_ingestion/
 │   ├── voice_transcription/
-│   ├── slack_discord/
+	│   ├── slack/
 │   └── google_workspace/
 └── infra/                 # Infrastructure
 ```

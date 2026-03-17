@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS seedlings.users (
 CREATE TABLE IF NOT EXISTS seedlings.founder_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES seedlings.users(id) ON DELETE CASCADE,
-    source VARCHAR(50) NOT NULL,  -- 'voice', 'slack', 'discord', 'journal', 'calendar', 'upload'
+    source VARCHAR(50) NOT NULL,  -- 'voice', 'slack', 'journal', 'calendar', 'upload'
     event_type VARCHAR(50) NOT NULL,  -- 'reflection', 'decision', 'observation', 'review'
     scrubbed_text TEXT NOT NULL,
     context JSONB DEFAULT '{}',
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS seedlings.knowledge_chunks (
 CREATE TABLE IF NOT EXISTS seedlings.integrations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES seedlings.users(id) ON DELETE CASCADE,
-    service VARCHAR(50) NOT NULL,  -- 'slack', 'discord', 'google', 'gmail'
+    service VARCHAR(50) NOT NULL,  -- 'slack', 'google', 'gmail'
     access_token_encrypted TEXT,
     refresh_token_encrypted TEXT,
     scopes TEXT,

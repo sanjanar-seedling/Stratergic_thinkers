@@ -20,11 +20,11 @@ All tables live under the `seedlings` schema.
 | Table | Purpose |
 |-------|---------|
 | `users` | Founders/users with authentication credentials and encryption keys |
-| `founder_events` | Normalized events from all ingestion sources (voice, Slack, Discord, journal, etc.) with vector embeddings |
+| `founder_events` | Normalized events from all ingestion sources (voice, Slack, journal, calendar, etc.) with vector embeddings |
 | `decisions` | Decision tracking and Judgment Quality Scorecard with confidence/outcome scores |
 | `bias_detections` | Cognitive bias detections linked to events, with severity and acknowledgment status |
 | `knowledge_chunks` | RAG knowledge base chunks with vector embeddings for similarity search |
-| `integrations` | OAuth tokens for third-party services (Slack, Discord, Google, Gmail) |
+| `integrations` | OAuth tokens for third-party services (Slack, Google, Gmail) |
 
 ## 🔌 Extensions
 

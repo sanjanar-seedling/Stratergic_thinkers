@@ -63,7 +63,7 @@ backend/
 | `schemas.py` | Pydantic models | Request/response validation and serialisation |
 | `api/auth.py` | `auth_router` | User registration, login, JWT token management |
 | `api/routes.py` | `router` | Core CRUD and analysis endpoints |
-| `api/integrations.py` | `integrations_router` | Slack, Discord, Google OAuth flows |
+| `api/integrations.py` | `integrations_router` | Slack, Google OAuth flows |
 | `core/config.py` | `get_settings()` | Centralised app configuration from environment |
 | `core/llm_provider.py` | LLM abstraction | Swap between OpenAI and Ollama without code changes |
 | `core/privacy.py` | PII utilities | Presidio-powered detection and anonymisation |

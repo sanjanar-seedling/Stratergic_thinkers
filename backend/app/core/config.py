@@ -55,12 +55,6 @@ class Settings(BaseSettings):
     slack_client_secret: str = ""
     slack_redirect_uri: str = "https://localhost:5173/oauth/callback"
 
-    # OAuth — Discord
-    discord_client_id: str = ""
-    discord_client_secret: str = ""
-    discord_redirect_uri: str = "https://localhost:5173/oauth/callback"
-    discord_bot_token: str = ""
-
     # OAuth — Google (Calendar + Gmail)
     google_client_id: str = ""
     google_client_secret: str = ""

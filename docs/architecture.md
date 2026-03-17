@@ -20,7 +20,7 @@ Multi-modal input capture system:
   - Local Whisper model support
   - Automatic event type detection from transcription
 
-- **Slack/Discord** (`workers/slack_discord/`)
+- **Slack** (`workers/slack/`)
   - Webhook-based ingestion
   - Signature verification
   - Real-time event streaming
@@ -34,7 +34,7 @@ Multi-modal input capture system:
 ```python
 {
     "id": "unique-id",
-    "source": "email|slack|discord|voice|web|google_calendar",
+    "source": "email|slack|voice|web|google_calendar",
     "event_type": "reflection|decision_record|weekly_review|time_allocation",
     "text": "content",
     "context": {"source-specific metadata"},
@@ -227,7 +227,7 @@ npm run dev
 # Workers (in separate terminals)
 python workers/email_ingestion/worker.py
 python workers/voice_transcription/worker.py
-python workers/slack_discord/worker.py
+python workers/slack/worker.py
 
 # Event Processor
 python backend/app/services/event_processor.py
@@ -266,7 +266,7 @@ python backend/app/services/event_processor.py
 ## Roadmap
 
 ### Phase 1: MVP (Current)
-- [x] Multi-modal ingestion (email, voice, Slack, Discord)
+- [x] Multi-modal ingestion (email, voice, Slack)
 - [x] Pattern recognition engine
 - [x] State tracking engine
 - [x] RAG pipeline with framework library
