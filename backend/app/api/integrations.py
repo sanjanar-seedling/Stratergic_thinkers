@@ -42,7 +42,7 @@ OAUTH_CONFIGS = {
     "slack": {
         "auth_url": "https://slack.com/oauth/v2/authorize",
         "token_url": "https://slack.com/api/oauth.v2.access",
-        "scopes": "channels:history,chat:write,groups:history,im:history",
+        "scopes": "channels:history,chat:write,groups:history,im:history,channels:read,groups:read,im:read,mpim:read",
     },
     "discord": {
         "auth_url": "https://discord.com/api/oauth2/authorize",
