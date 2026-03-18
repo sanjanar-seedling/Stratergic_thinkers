@@ -16,9 +16,10 @@ help: ## Show this help
 
 setup: ## Setup project from scratch (install deps + infra)
 	@echo "🚀 Setting up Seedlings platform..."
-	@$(MAKE) install
+	@$(MAKE) install-frontend
 	@$(MAKE) certs
 	@$(MAKE) infra
+	@$(MAKE) db-init
 	@echo "✅ Setup complete! Run 'make dev' to start development"
 
 init-prod: ## Initialize production environment (build + migrate)
@@ -29,7 +30,19 @@ init-prod: ## Initialize production environment (build + migrate)
 
 # ── Development ──────────────────────────────────────────────
 
-dev: infra certs dev-backend dev-frontend ## Start everything (infra + backend + frontend)
+dev: certs infra ## Start everything (infra + backend + frontend) with Docker
+	@echo ""
+	@echo "✅ All services started!"
+	@echo ""
+	@echo "🌐 Access the app:"
+	@echo "   Frontend:  https://localhost:5173"
+	@echo "   Backend:   http://localhost:8000"
+	@echo "   API Docs:  http://localhost:8000/docs"
+	@echo ""
+	@echo "📦 Backend Logs:   make logs-backend"
+	@echo "📦 Frontend Logs:  make logs-frontend"
+	@echo "🛑 Stop services:  make stop-all"
+	@echo ""
 
 dev-frontend: ## Start frontend (Vite HTTPS on :5173)
 	@echo "🌱 Starting frontend on https://localhost:5173 ..."
@@ -65,10 +78,27 @@ prod-logs: ## Tail production logs
 prod-status: ## Show production container status
 	@docker compose ps
 
+# ── Logs ─────────────────────────────────────────────────────
+
+logs: ## Tail all Docker logs
+	@docker compose logs -f
+
+logs-backend: ## Tail backend logs
+	@docker compose logs -f backend
+
+logs-frontend: ## Tail frontend logs
+	@docker compose logs -f frontend
+
+logs-postgres: ## Tail database logs
+	@docker compose logs -f postgres
+
+logs-redis: ## Tail Redis logs
+	@docker compose logs -f redis
+
 # ── Stop ─────────────────────────────────────────────────────
 
-stop: stop-frontend stop-backend ## Stop frontend + backend
-	@echo "✅ All app processes stopped"
+stop: infra-stop ## Stop all services (Docker)
+	@echo "✅ All services stopped"
 
 stop-frontend: ## Stop frontend dev server
 	@echo "Stopping frontend..."
@@ -79,7 +109,7 @@ stop-backend: ## Stop backend dev server
 	@echo "Stopping backend..."
 	@lsof -ti:8000 2>/dev/null | xargs kill -9 2>/dev/null || true
 
-stop-all: stop infra-stop ## Stop everything including Docker infra
+stop-all: infra-stop ## Stop everything including Docker infra
 	@echo "✅ Everything stopped"
 
 # ── Infrastructure (Docker) ──────────────────────────────────
@@ -116,10 +146,11 @@ certs-clean: ## Remove local SSL certificates
 	@rm -f frontend/localhost+1.pem frontend/localhost+1-key.pem
 	@echo "✅ SSL certificates removed"
 
-db-init: ## Initialize database (run migrations + init scripts)
+db-init: ## Initialize database (runs with Docker)
 	@echo "🗄️  Initializing database..."
-	@cd backend && venv/bin/python app/db_init.py
-	@echo "✅ Database initialized"
+	@docker compose exec -T postgres psql -U seedlings -d seedlings -f /docker-entrypoint-initdb.d/init.sql >/dev/null 2>&1 && \
+		echo "✅ Database initialized" || \
+		echo "✅ Database already initialized"
 
 db-migrate: ## Run pending database migrations
 	@echo "📦 Running migrations..."
@@ -137,13 +168,13 @@ db-reset: ## Reset database (WARNING: deletes all data)
 
 # ── Install ──────────────────────────────────────────────────
 
-install: install-backend install-frontend ## Install all dependencies
+install: install-frontend ## Install frontend dependencies (backend runs in Docker)
 
 install-frontend: ## Install frontend dependencies
 	@echo "📦 Installing frontend dependencies..."
 	@cd frontend && npm install
 
-install-backend: ## Install backend dependencies (with venv)
+install-backend: ## Install backend dependencies locally (optional, for local dev)
 	@echo "📦 Installing backend dependencies..."
 	@cd backend && python3 -m venv venv 2>/dev/null || true
 	@cd backend && venv/bin/pip install -r requirements.txt
@@ -175,9 +206,6 @@ clean: ## Remove build artifacts and caches
 	@rm -rf frontend/dist frontend/node_modules/.vite
 	@find backend -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@find backend -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
-
-logs: ## Tail backend logs
-	@tail -f /tmp/seedlings-backend.log 2>/dev/null || echo "No log file. Backend logs go to stdout when running with 'make dev-backend'"
 
 status: ## Show running services and ports
 	@echo "🔍 Development Services:"

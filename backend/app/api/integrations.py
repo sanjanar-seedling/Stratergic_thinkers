@@ -42,7 +42,8 @@ OAUTH_CONFIGS = {
     "slack": {
         "auth_url": "https://slack.com/oauth/v2/authorize",
         "token_url": "https://slack.com/api/oauth.v2.access",
-        "scopes": "channels:history,chat:write,groups:history,im:history,channels:read,groups:read,im:read,mpim:read,users:read,team:read",
+        "bot_scopes": "chat:write",  # What the bot/app can do
+        "user_scopes": "channels:history,groups:history,im:history,mpim:history,channels:read,groups:read,im:read,mpim:read",  # What the user authorizes
     },
     "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -93,13 +94,56 @@ def _get_redirect_uri(service: str) -> str:
 async def get_integration_status(
     current_user: dict = Depends(get_current_user),
 ):
-    """Get connection status for all integrations."""
+    """Get connection status for all integrations (both in-memory and database)."""
+    from sqlalchemy import select
+    from app.core.database import async_session_factory
+    from app.models import SlackInstallation
+    
     user_integrations = [
         i for i in _integrations if i["user_id"] == current_user["id"]
     ]
+    
+    # Fetch Slack installations from database
+    slack_installs = []
+    try:
+        async with async_session_factory() as session:
+            slack_installations = await session.execute(
+                select(SlackInstallation).where(
+                    (SlackInstallation.user_id == current_user["id"]) &
+                    (SlackInstallation.is_active == True)
+                )
+            )
+            slack_installs = slack_installations.scalars().all()
+    except Exception as e:
+        logger.debug(f"Could not fetch Slack installations from database: {e}")
+        slack_installs = []
 
     statuses = []
-    for service_name in OAUTH_CONFIGS:
+    
+    # Determine Slack connection status
+    slack_connected = False
+    slack_connected_at = None
+    
+    # Check Slack installations from database
+    if slack_installs:
+        slack_connected = True
+        slack_connected_at = slack_installs[0].installed_at.isoformat() if slack_installs[0].installed_at else None
+    else:
+        # Also check for legacy in-memory Slack tokens during transition
+        legacy_slack = next((i for i in user_integrations if i["service"] == "slack"), None)
+        if legacy_slack:
+            slack_connected = True
+            slack_connected_at = legacy_slack.get("connected_at")
+    
+    # Always add Slack status
+    statuses.append(IntegrationStatus(
+        service="slack",
+        connected=slack_connected,
+        connected_at=slack_connected_at,
+    ))
+    
+    # Add other services from in-memory store (Google, etc)
+    for service_name in ["google", "gmail"]:
         integration = next(
             (i for i in user_integrations if i["service"] == service_name),
             None,
@@ -135,9 +179,16 @@ async def get_auth_url(
         "client_id": client_id,
         "redirect_uri": _get_redirect_uri(service),
         "response_type": "code",
-        "scope": config["scopes"],
         "state": service,  # Used by callback page to identify the service
     }
+    
+    # Slack uses separate bot and user scopes
+    if service == "slack":
+        params["scope"] = config["bot_scopes"]
+        params["user_scope"] = config["user_scopes"]
+        logger.info(f"Slack OAuth scopes - bot: {params['scope']}, user: {params['user_scope']}")
+    else:
+        params["scope"] = config["scopes"]
 
     # Google needs access_type=offline for refresh tokens
     if service in ("google", "gmail"):
@@ -145,6 +196,7 @@ async def get_auth_url(
         params["prompt"] = "consent"
 
     auth_url = f"{config['auth_url']}?{urlencode(params)}"
+    logger.info(f"Generated OAuth URL for {service}: {auth_url}")
     return {"auth_url": auth_url}
 
 
@@ -210,7 +262,21 @@ async def oauth_callback(
             error_msg = token_data.get("error", "unknown error")
             logger.error(f"Slack OAuth error: {error_msg}")
             raise HTTPException(status_code=400, detail=f"Slack authorization failed: {error_msg}")
-        access_token = token_data.get("access_token") or token_data.get("authed_user", {}).get("access_token", "")
+        
+        # Debug: Log all token fields
+        logger.info(f"Slack OAuth response keys: {list(token_data.keys())}")
+        logger.info(f"Slack authed_user keys: {list(token_data.get('authed_user', {}).keys())}")
+        logger.info(f"Top-level access_token (first 20 chars): {token_data.get('access_token', '')[:20]}...")
+        logger.info(f"User scope from response: {token_data.get('authed_user', {}).get('scope', 'NONE')}")
+        
+        # Try to get tokens from both locations
+        bot_token = token_data.get("access_token")
+        user_token = token_data.get("authed_user", {}).get("access_token")
+        
+        logger.warning(f"Slack token types received: bot_token={'xoxb' if bot_token and bot_token.startswith('xoxb') else 'MISSING/WRONG'}, user_token={'xoxp' if user_token and user_token.startswith('xoxp') else 'MISSING'}")
+        
+        # Use whichever token we got
+        access_token = user_token or bot_token
     else:
         access_token = token_data.get("access_token", "")
 
@@ -219,7 +285,15 @@ async def oauth_callback(
         logger.error(f"No access token received from {service}. Response keys: {list(token_data.keys())}")
         raise HTTPException(status_code=400, detail=f"No access token received from {service}. Authorization may have been denied.")
 
-    # Store integration (replace existing if any)
+    # Handle Slack installations: encrypt and save to database
+    if service == "slack":
+        return await _save_slack_installation(
+            user_id=current_user["id"],
+            token_data=token_data,
+            access_token=access_token,
+        )
+    
+    # For other services (Google), keep in-memory for now
     _integrations[:] = [
         i for i in _integrations
         if not (i["user_id"] == current_user["id"] and i["service"] == service)
@@ -238,22 +312,168 @@ async def oauth_callback(
     return {"status": "connected", "service": service}
 
 
+async def _save_slack_installation(user_id: str, token_data: dict, access_token: str) -> dict:
+    """Save encrypted Slack installation to database."""
+    from app.core.encryption import E2EEncryption
+    from app.core.database import async_session_factory
+    from app.models import SlackInstallation
+    from sqlalchemy import delete
+    import json
+    
+    # Extract Slack identifiers
+    slack_user_id = token_data.get("authed_user", {}).get("id", "")
+    slack_workspace_id = token_data.get("team", {}).get("id", "")
+    slack_workspace_name = token_data.get("team", {}).get("name", "")
+    
+    # Check token types
+    bot_token = token_data.get("access_token")  # Usually a bot token (xoxb-)
+    user_token = token_data.get("authed_user", {}).get("access_token")  # User token (xoxp-), might not exist
+    
+    if not slack_user_id or not slack_workspace_id:
+        logger.error(f"Missing Slack identifiers in token response: {token_data.keys()}")
+        raise HTTPException(status_code=400, detail="Invalid Slack OAuth response - missing identifiers")
+    
+    # Determine which token is which
+    if bot_token and bot_token.startswith("xoxb-"):
+        logger.info(f"Got bot token (xoxb-) for user {slack_user_id}")
+        has_bot_token = True
+        has_user_token = False
+    else:
+        has_bot_token = False
+    
+    if user_token and user_token.startswith("xoxp-"):
+        logger.info(f"Got user token (xoxp-) for user {slack_user_id}")
+        has_user_token = True
+    else:
+        user_token = None
+        logger.warning(f"No user token (xoxp-) received - DM access will be limited. Only bot token available.")
+    
+    # Encrypt tokens
+    encryptor = E2EEncryption()
+    encryption_key = encryptor.derive_key_from_string(settings.encryption_key) if settings.encryption_key else b"0" * 32
+    
+    # Encrypt user token (prefer user token, fallback to bot token for channel access)
+    token_to_use = user_token or bot_token  # Use user token if available, else bot token
+    
+    if not token_to_use:
+        raise HTTPException(status_code=400, detail="No Slack token received in OAuth response")
+    
+    encrypted_user_token_data = encryptor.encrypt_data(token_to_use, encryption_key)
+    
+    encrypted_bot_token_data = None
+    if bot_token and bot_token != token_to_use:
+        # Only save bot token separately if it's different from what we saved as user token
+        encrypted_bot_token_data = encryptor.encrypt_data(bot_token, encryption_key)
+    
+    logger.info(
+        f"Encrypted Slack tokens for user {user_id}, workspace {slack_workspace_id}: "
+        f"user_token={bool(user_token)}, bot_token={bool(bot_token)}"
+    )
+    
+    # Save to database
+    from app.models import User
+    from sqlalchemy import select
+    
+    # Step 1: Ensure user exists (create in separate transaction if needed)
+    async with async_session_factory() as check_session:
+        result = await check_session.execute(select(User).where(User.id == user_id))
+        user_exists = result.scalars().first() is not None
+    
+    if not user_exists:
+        logger.warning(f"User {user_id} not found in database. Creating minimal account for Slack integration.")
+        from app.core.security import hash_password
+        
+        # Create user in its own transaction
+        async with async_session_factory() as create_session:
+            new_user = User(
+                id=user_id,
+                email=slack_user_id or f"slack_{slack_workspace_id}@slacked.local",
+                hashed_password=hash_password("change_me_in_settings"),
+                full_name=slack_user_id,
+            )
+            create_session.add(new_user)
+            await create_session.commit()
+            logger.info(f"Created user {user_id}")
+    
+    # Step 2: Save Slack installation in main transaction
+    async with async_session_factory() as session:
+        # Delete any existing installation for this user+workspace
+        await session.execute(
+            delete(SlackInstallation).where(
+                (SlackInstallation.user_id == user_id) & 
+                (SlackInstallation.slack_workspace_id == slack_workspace_id)
+            )
+        )
+        
+        # Create new installation record
+        installation = SlackInstallation(
+            user_id=user_id,
+            slack_user_id=slack_user_id,
+            slack_workspace_id=slack_workspace_id,
+            slack_workspace_name=slack_workspace_name,
+            encrypted_user_token=encrypted_user_token_data["ciphertext"],
+            user_token_nonce=encrypted_user_token_data["nonce"],
+            user_token_tag=encrypted_user_token_data["tag"],
+            encrypted_bot_token=encrypted_bot_token_data["ciphertext"] if encrypted_bot_token_data else None,
+            bot_token_nonce=encrypted_bot_token_data["nonce"] if encrypted_bot_token_data else None,
+            bot_token_tag=encrypted_bot_token_data["tag"] if encrypted_bot_token_data else None,
+            # Parse scopes - could be in root level or authed_user
+            user_scopes=token_data.get("authed_user", {}).get("scope", "") or token_data.get("scope", ""),
+            bot_scopes=token_data.get("scope", "") if bot_token and bot_token.startswith("xoxb-") else "",
+            is_active=True,
+        )
+        
+        session.add(installation)
+        await session.commit()
+        
+        logger.info(f"Saved Slack installation for user {user_id} in workspace {slack_workspace_id}")
+    
+    return {
+        "status": "connected",
+        "service": "slack",
+        "workspace": slack_workspace_name,
+        "note": "DM access limited: user token not available, using bot token for channels only" if not user_token else None,
+    }
+
+
 @router.delete("/{service}")
 async def disconnect_integration(
     service: str,
     current_user: dict = Depends(get_current_user),
 ):
     """Disconnect an integration."""
-    before = len(_integrations)
-    _integrations[:] = [
-        i for i in _integrations
-        if not (i["user_id"] == current_user["id"] and i["service"] == service)
-    ]
+    if service == "slack":
+        # Delete from database
+        from sqlalchemy import delete
+        from app.core.database import async_session_factory
+        from app.models import SlackInstallation
+        
+        async with async_session_factory() as session:
+            result = await session.execute(
+                delete(SlackInstallation).where(
+                    (SlackInstallation.user_id == current_user["id"]) &
+                    (SlackInstallation.is_active == True)
+                )
+            )
+            await session.commit()
+            
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Slack integration not found")
+            
+            logger.info(f"User {current_user['id']} disconnected Slack ({result.rowcount} installations)")
+    else:
+        # Delete from in-memory store (Google, Gmail)
+        before = len(_integrations)
+        _integrations[:] = [
+            i for i in _integrations
+            if not (i["user_id"] == current_user["id"] and i["service"] == service)
+        ]
 
-    if len(_integrations) == before:
-        raise HTTPException(status_code=404, detail="Integration not found")
+        if len(_integrations) == before:
+            raise HTTPException(status_code=404, detail="Integration not found")
 
-    logger.info(f"User {current_user['id']} disconnected {service}")
+        logger.info(f"User {current_user['id']} disconnected {service}")
+    
     return {"status": "disconnected", "service": service}
 
 
@@ -268,44 +488,128 @@ async def sync_integrations(
     """
     import uuid
     from datetime import datetime
+    from sqlalchemy import select
 
     from app.api.routes import _events
     from app.middleware.pii_stripper import full_scrub
     from app.core.redis_client import publish_event
-
-    user_integrations = [
-        i for i in _integrations if i["user_id"] == current_user["id"]
-    ]
-
-    if not user_integrations:
-        return {"status": "no_integrations", "events_created": 0, "services_synced": []}
+    from app.core.database import async_session_factory
+    from app.models import SlackInstallation
+    from app.core.encryption import E2EEncryption
 
     events_created = 0
     services_synced = []
     errors = []
 
-    for integration in user_integrations:
-        service = integration["service"]
-        access_token = integration.get("access_token", "")
-        
-        # For Slack: fallback to user token from .env if OAuth token is bot token
-        if service == "slack" and access_token.startswith("xoxb-"):
-            slack_user_token = getattr(settings, "slack_user_token", None)
-            if slack_user_token:
-                logger.info(f"Slack bot token detected, using user token from .env for better DM access")
-                access_token = slack_user_token
+    # Fetch Slack installations from database
+    installations = []
+    try:
+        async with async_session_factory() as session:
+            slack_installations = await session.execute(
+                select(SlackInstallation).where(
+                    (SlackInstallation.user_id == current_user["id"]) &
+                    (SlackInstallation.is_active == True)
+                )
+            )
+            installations = slack_installations.scalars().all()
+        logger.info(f"Fetched {len(installations)} Slack installations from database")
+    except Exception as e:
+        logger.warning(f"Could not fetch from database (table may not exist yet): {e}")
+        installations = []
+    
+    # Fallback: Check for old in-memory Slack tokens (backwards compatibility during transition)
+    if not installations:
+        legacy_slack = [i for i in _integrations if i["user_id"] == current_user["id"] and i["service"] == "slack"]
+        if legacy_slack:
+            logger.info(f"Using legacy in-memory Slack token (migrate by re-authenticating)")
+            # Use the legacy token directly
+            for integration in legacy_slack:
+                access_token = integration.get("access_token", "")
+                try:
+                    logger.info(f"Syncing Slack (legacy in-memory token, first 20 chars: {access_token[:20]}...)")
+                    texts = await _fetch_slack_messages(access_token)
+                    logger.info(f"Sync slack: got {len(texts)} texts")
+                    
+                    if texts:
+                        uid = current_user["id"]
+                        for text in texts:
+                            scrubbed_text = full_scrub(text)
+                            event_id = str(uuid.uuid4())
+                            new_event = {
+                                "id": event_id,
+                                "user_id": uid,
+                                "source": "slack",
+                                "event_type": "reflection",
+                                "scrubbed_text": scrubbed_text,
+                                "context": {"synced_from": "slack", "legacy": True},
+                                "created_at": datetime.utcnow().isoformat(),
+                            }
+                            _events.setdefault(uid, []).insert(0, new_event)
+                            events_created += 1
 
+                            try:
+                                import json
+                                await publish_event(
+                                    settings.redis_stream_name,
+                                    {
+                                        "payload": json.dumps({
+                                            "id": event_id,
+                                            "user_id": uid,
+                                            "source": "slack",
+                                            "event_type": "reflection",
+                                            "text": text,
+                                            "context": new_event["context"],
+                                            "created_at": new_event["created_at"],
+                                        }),
+                                    }
+                                )
+                                logger.info(f"Published event {event_id} to Redis")
+                            except Exception as e:
+                                logger.error(f"Failed to publish event: {e}")
+                        
+                        services_synced.append("slack")
+                    
+                except Exception as e:
+                    logger.error(f"Sync failed for legacy Slack: {e}", exc_info=True)
+                    errors.append({"service": "slack", "error": str(e)})
+            
+            return {
+                "status": "success",
+                "events_created": events_created,
+                "services_synced": services_synced,
+                "errors": errors if errors else None,
+                "note": "Using legacy in-memory token. Please re-authenticate Slack to migrate to database storage.",
+            }
+        else:
+            return {"status": "no_integrations", "events_created": 0, "services_synced": []}
+    
+    # Decrypt and process each Slack installation (new database-backed flow)
+    encryptor = E2EEncryption()
+    encryption_key = encryptor.derive_key_from_string(settings.encryption_key) if settings.encryption_key else b"0" * 32
+    
+    for installation in installations:
         try:
-            logger.info(f"Syncing {service} (token: {access_token[:20]}...)")
-            texts = await _fetch_texts_from_service(service, access_token)
-            logger.info(f"Sync {service}: got {len(texts)} texts")
+            # Decrypt the user token
+            decrypted_token = encryptor.decrypt_data(
+                {
+                    "ciphertext": installation.encrypted_user_token,
+                    "nonce": installation.user_token_nonce,
+                    "tag": installation.user_token_tag,
+                },
+                encryption_key,
+            )
+            
+            logger.info(f"Syncing Slack workspace {installation.slack_workspace_id}")
+            texts = await _fetch_slack_messages(decrypted_token)
+            logger.info(f"Sync slack: got {len(texts)} texts from workspace {installation.slack_workspace_id}")
+            
         except Exception as e:
-            logger.error(f"Sync failed for {service}: {e}")
-            errors.append({"service": service, "error": str(e)})
+            logger.error(f"Sync failed for Slack workspace {installation.slack_workspace_id}: {e}", exc_info=True)
+            errors.append({"service": "slack", "workspace": installation.slack_workspace_id, "error": str(e)})
             continue
 
         if not texts:
-            services_synced.append(service)
+            services_synced.append("slack")
             continue
 
         uid = current_user["id"]
@@ -315,10 +619,14 @@ async def sync_integrations(
             new_event = {
                 "id": event_id,
                 "user_id": uid,
-                "source": "google_calendar" if service == "google" else service,
+                "source": "slack",
                 "event_type": "reflection",
                 "scrubbed_text": scrubbed_text,
-                "context": {"synced_from": service},
+                "context": {
+                    "synced_from": "slack",
+                    "workspace": installation.slack_workspace_name,
+                    "workspace_id": installation.slack_workspace_id,
+                },
                 "created_at": datetime.utcnow().isoformat(),
             }
             _events.setdefault(uid, []).insert(0, new_event)
@@ -333,7 +641,7 @@ async def sync_integrations(
                         "payload": json.dumps({
                             "id": event_id,
                             "user_id": uid,
-                            "source": new_event["source"],
+                            "source": "slack",
                             "event_type": "reflection",
                             "text": text,  # Raw text before scrubbing
                             "context": new_event["context"],
@@ -346,16 +654,25 @@ async def sync_integrations(
                 logger.error(f"Failed to publish event {event_id} to Redis: {e}")
                 # Non-critical - event is still stored in memory
 
-        services_synced.append(service)
+        services_synced.append("slack")
+        
+        # Update last_accessed_at timestamp
+        async with async_session_factory() as session:
+            db_installation = await session.get(SlackInstallation, installation.id)
+            if db_installation:
+                db_installation.last_accessed_at = datetime.utcnow()
+                await session.commit()
 
     return {
         "status": "success",
         "events_created": events_created,
         "services_synced": services_synced,
-        "errors": errors,
+        "errors": errors if errors else None,
     }
 
 
+# Legacy in-memory sync (for Google Calendar, Gmail)
+# TODO: Migrate Google services to database-backed installations like Slack
 async def _fetch_texts_from_service(service: str, access_token: str) -> list[str]:
     """Call the real API for a service and return a list of text strings to ingest."""
     if not access_token:
@@ -374,53 +691,65 @@ async def _fetch_texts_from_service(service: str, access_token: str) -> list[str
 
 
 async def _fetch_slack_messages(access_token: str) -> list[str]:
-    """Fetch recent messages from Slack (DMs, group DMs, and all channels the bot is a member of)."""
+    """Fetch recent messages from Slack (DMs, group DMs, and all channels the bot is a member of).
+    
+    Note: Bot tokens (xoxb-) cannot access DMs/MPIMs, only user tokens (xoxp-) can.
+    """
     import httpx
 
     texts = []
     headers = {"Authorization": f"Bearer {access_token}"}
+    
+    # Check token type
+    is_bot_token = access_token.startswith("xoxb-")
+    is_user_token = access_token.startswith("xoxp-")
+    
+    logger.info(f"Slack token type: bot_token={is_bot_token}, user_token={is_user_token}")
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # Fetch from DM channels
-        try:
-            resp = await client.get(
-                "https://slack.com/api/conversations.list",
-                headers=headers,
-                params={"types": "im,mpim", "limit": 5},
-            )
-            data = resp.json()
-            logger.info(f"Slack conversations.list response (im/mpim): ok={data.get('ok')}, channels_count={len(data.get('channels', []))}")
-            
-            if data.get("ok"):
-                channels = data.get("channels", [])[:3]
-                logger.info(f"Slack: Processing {len(channels)} DM/Group DM channels")
+        # Fetch from DM channels (only if we have a user token)
+        if not is_bot_token:
+            try:
+                resp = await client.get(
+                    "https://slack.com/api/conversations.list",
+                    headers=headers,
+                    params={"types": "im,mpim", "limit": 5},
+                )
+                data = resp.json()
+                logger.info(f"Slack conversations.list response (im/mpim): ok={data.get('ok')}, channels_count={len(data.get('channels', []))}")
                 
-                for channel in channels:
-                    channel_id = channel["id"]
-                    logger.info(f"Slack: Fetching history for DM {channel_id}")
+                if data.get("ok"):
+                    channels = data.get("channels", [])[:3]
+                    logger.info(f"Slack: Processing {len(channels)} DM/Group DM channels")
                     
-                    hist = await client.get(
-                        "https://slack.com/api/conversations.history",
-                        headers=headers,
-                        params={"channel": channel_id, "limit": 50},
-                    )
-                    hist_data = hist.json()
-                    
-                    if not hist_data.get("ok"):
-                        logger.warning(f"Slack history error for {channel_id}: {hist_data.get('error')}")
-                        continue
-                    
-                    messages = hist_data.get("messages", [])
-                    logger.info(f"Slack: DM {channel_id} has {len(messages)} messages")
-                    
-                    for msg in messages:
-                        text = msg.get("text", "").strip()
-                        if text and len(text) > 2:
-                            texts.append(text)
-        except Exception as e:
-            logger.error(f"Slack IM fetch failed: {e}", exc_info=True)
+                    for channel in channels:
+                        channel_id = channel["id"]
+                        logger.info(f"Slack: Fetching history for DM {channel_id}")
+                        
+                        hist = await client.get(
+                            "https://slack.com/api/conversations.history",
+                            headers=headers,
+                            params={"channel": channel_id, "limit": 50},
+                        )
+                        hist_data = hist.json()
+                        
+                        if not hist_data.get("ok"):
+                            logger.warning(f"Slack history error for {channel_id}: {hist_data.get('error')}")
+                            continue
+                        
+                        messages = hist_data.get("messages", [])
+                        logger.info(f"Slack: DM {channel_id} has {len(messages)} messages")
+                        
+                        for msg in messages:
+                            text = msg.get("text", "").strip()
+                            if text and len(text) > 2:
+                                texts.append(text)
+            except Exception as e:
+                logger.error(f"Slack IM fetch failed: {e}", exc_info=True)
+        else:
+            logger.warning("Bot token detected (xoxb-): DM access not available. Skipping DM/MPIM channels. Add a user token (xoxp-) for full access.")
 
-        # ALWAYS also fetch from public channels (not just when DMs are empty)
+        # ALWAYS also fetch from public/private channels (works with both bot and user tokens)
         try:
             resp = await client.get(
                 "https://slack.com/api/conversations.list",
@@ -461,7 +790,7 @@ async def _fetch_slack_messages(access_token: str) -> list[str]:
 
     logger.info(f"Slack sync: FINAL - fetched {len(texts)} messages total")
     if not texts:
-        logger.warning("Slack sync returned 0 messages. Make sure the bot is added to channels with recent messages.")
+        logger.warning(f"Slack sync returned 0 messages. Make sure the bot/app is added to channels with recent messages.")
     return texts
 
 

@@ -308,3 +308,47 @@ class FrameworkApplication(Base):
     was_helpful = Column(Boolean)  # Founder's self-assessment
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SlackInstallation(Base):
+    """Slack OAuth installation for a user and workspace."""
+
+    __tablename__ = "slack_installations"
+    __table_args__ = {"schema": "seedlings"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("seedlings.users.id"), nullable=False, index=True)
+    
+    # Slack identifiers
+    slack_user_id = Column(String(255), nullable=False)  # e.g., U12345
+    slack_workspace_id = Column(String(255), nullable=False)  # e.g., T98765
+    slack_workspace_name = Column(String(511))  # e.g., "founder-strategic-thinking"
+    
+    # Encrypted tokens (AES-256-GCM)
+    encrypted_user_token = Column(Text, nullable=False)  # xoxp- token (user scope)
+    user_token_nonce = Column(String(255), nullable=False)  # For AES-GCM
+    user_token_tag = Column(String(255), nullable=False)  # For AES-GCM
+    
+    encrypted_bot_token = Column(Text)  # xoxb- token (bot scope), optional
+    bot_token_nonce = Column(String(255))
+    bot_token_tag = Column(String(255))
+    
+    # Refresh token (if token rotation enabled in future)
+    refresh_token = Column(Text)  # For token refresh flow
+    refresh_token_expires_at = Column(DateTime)  # When refresh token expires
+    
+    # Scopes granted
+    user_scopes = Column(String(1024))  # Comma-separated list of user scopes
+    bot_scopes = Column(String(255))  # Comma-separated list of bot scopes
+    
+    # Metadata
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Timestamps
+    installed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    token_expires_at = Column(DateTime)  # If token rotation is used
+    last_accessed_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User")

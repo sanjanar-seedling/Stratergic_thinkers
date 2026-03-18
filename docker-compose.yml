@@ -54,7 +54,7 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://seedlings:seedlings_dev_2024@postgres:5432/seedlings
+      - DATABASE_URL=postgresql+asyncpg://seedlings:seedlings_dev_2024@postgres:5432/seedlings
       - S3_ENDPOINT=http://minio:9000
     depends_on:
       redis:
@@ -68,7 +68,10 @@ services:
       dockerfile: Dockerfile
     container_name: seedlings-frontend
     ports:
-      - "5173:80"
+      - "5173:443"
+    volumes:
+      - ./localhost+1.pem:/etc/nginx/certs/localhost.pem:ro
+      - ./localhost+1-key.pem:/etc/nginx/certs/localhost-key.pem:ro
     env_file: .env
     depends_on:
       - backend

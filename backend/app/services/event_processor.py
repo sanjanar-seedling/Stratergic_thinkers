@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-import redis
+import redis.asyncio
 from pydantic import BaseModel, Field, validator
 
 # Strategic Thinkers internal imports
@@ -82,15 +82,15 @@ class EventProcessor:
         self.consumer_name = consumer_name
         self._redis_client = None
 
-    def _get_redis(self) -> redis.Redis:
-        """Lazy Redis connection."""
+    async def _get_redis(self) -> redis.asyncio.Redis:
+        """Lazy async Redis connection."""
         if self._redis_client is None:
-            self._redis_client = redis.from_url(
+            self._redis_client = await redis.asyncio.from_url(
                 self.redis_url, decode_responses=True
             )
             # Create consumer group if it doesn't exist
             try:
-                self._redis_client.xgroup_create(
+                await self._redis_client.xgroup_create(
                     self.stream_name,
                     self.consumer_group,
                     id="0",
@@ -135,7 +135,7 @@ class EventProcessor:
             batch_size: Number of events to fetch per batch
             block_ms: Milliseconds to block waiting for new events
         """
-        r = self._get_redis()
+        r = await self._get_redis()
         logger.info(
             f"Starting event processor: {self.consumer_name} "
             f"(group: {self.consumer_group})"
@@ -144,7 +144,7 @@ class EventProcessor:
         while True:
             try:
                 # Read from stream
-                messages = r.xreadgroup(
+                messages = await r.xreadgroup(
                     self.consumer_group,
                     self.consumer_name,
                     {self.stream_name: ">"},
@@ -162,14 +162,14 @@ class EventProcessor:
                             raw_payload = message_data.get("payload")
                             if not raw_payload:
                                 logger.warning(f"Empty payload: {message_id}")
-                                r.xack(self.stream_name, self.consumer_group, message_id)
+                                await r.xack(self.stream_name, self.consumer_group, message_id)
                                 continue
 
                             # Validate
                             event = self.validate_event(raw_payload)
                             if not event:
                                 logger.warning(f"Invalid event: {message_id}")
-                                r.xack(self.stream_name, self.consumer_group, message_id)
+                                await r.xack(self.stream_name, self.consumer_group, message_id)
                                 continue
 
                             # Enrich
@@ -233,7 +233,7 @@ class EventProcessor:
                                         logger.info(f"Generated Intervention -> {prompt.question}")
                                         # Push intervention to Redis for queued delivery
                                         try:
-                                            redis = self._get_redis()
+                                            redis_client = await self._get_redis()
                                             intervention_payload = {
                                                 "user_id": str(event.user_id),
                                                 "intervention_id": prompt.id,
@@ -241,7 +241,7 @@ class EventProcessor:
                                                 "context": prompt.context,
                                                 "timestamp": datetime.utcnow().isoformat(),
                                             }
-                                            redis.xadd(f"interventions:{event.user_id}", intervention_payload)
+                                            await redis_client.xadd(f"interventions:{event.user_id}", intervention_payload)
                                             logger.info(f"Intervention queued for delivery: {prompt.id}")
                                         except Exception as e:
                                             logger.warning(f"Failed to queue intervention delivery: {e}")
@@ -253,7 +253,7 @@ class EventProcessor:
                             )
 
                             # Acknowledge
-                            r.xack(self.stream_name, self.consumer_group, message_id)
+                            await r.xack(self.stream_name, self.consumer_group, message_id)
 
                         except Exception as e:
                             logger.error(f"Failed to process message {message_id}: {e}")

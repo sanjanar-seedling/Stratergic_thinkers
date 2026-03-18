@@ -8,12 +8,15 @@ CREATE SCHEMA IF NOT EXISTS seedlings;
 CREATE TABLE IF NOT EXISTS seedlings.users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    display_name VARCHAR(255),
-    is_active BOOLEAN DEFAULT TRUE,
-    encrypted_key_hash TEXT,
+    hashed_password VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255),
+    encryption_salt VARCHAR(255),
+    public_key TEXT,
+    privacy_settings JSONB DEFAULT '{}',
+    intervention_preferences JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login TIMESTAMPTZ
 );
 
 -- Founder Events (normalized from all ingestion sources)
@@ -84,6 +87,31 @@ CREATE TABLE IF NOT EXISTS seedlings.integrations (
     UNIQUE(user_id, service)
 );
 
+-- Slack Installations (encrypted tokens per workspace)
+CREATE TABLE IF NOT EXISTS seedlings.slack_installations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES seedlings.users(id) ON DELETE CASCADE,
+    slack_user_id VARCHAR(255) NOT NULL,
+    slack_workspace_id VARCHAR(255) NOT NULL,
+    slack_workspace_name VARCHAR(511),
+    encrypted_user_token TEXT NOT NULL,
+    user_token_nonce VARCHAR(255) NOT NULL,
+    user_token_tag VARCHAR(255) NOT NULL,
+    encrypted_bot_token TEXT,
+    bot_token_nonce VARCHAR(255),
+    bot_token_tag VARCHAR(255),
+    refresh_token TEXT,
+    refresh_token_expires_at TIMESTAMPTZ,
+    user_scopes VARCHAR(1024),
+    bot_scopes VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+    installed_at TIMESTAMPTZ DEFAULT NOW(),
+    token_expires_at TIMESTAMPTZ,
+    last_accessed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, slack_workspace_id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_events_user ON seedlings.founder_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON seedlings.founder_events(created_at);
@@ -91,6 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_decisions_user ON seedlings.decisions(user_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_status ON seedlings.decisions(status);
 CREATE INDEX IF NOT EXISTS idx_bias_user ON seedlings.bias_detections(user_id);
 CREATE INDEX IF NOT EXISTS idx_integrations_user ON seedlings.integrations(user_id);
+CREATE INDEX IF NOT EXISTS idx_slack_installations_user ON seedlings.slack_installations(user_id);
+CREATE INDEX IF NOT EXISTS idx_slack_installations_workspace ON seedlings.slack_installations(slack_workspace_id);
 
 -- Vector similarity indexes (IVFFlat for performance)
 CREATE INDEX IF NOT EXISTS idx_events_embedding ON seedlings.founder_events

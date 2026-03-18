@@ -83,6 +83,30 @@ class E2EEncryption:
         key = kdf.derive(password.encode())
         return key, salt
 
+    def derive_key_from_string(self, key_string: str) -> bytes:
+        """Derive a proper 32-byte AES key from an encryption key string.
+        
+        Uses PBKDF2 with a fixed salt for consistent key derivation.
+        
+        Args:
+            key_string: The encryption key string (can be any length)
+            
+        Returns:
+            A 32-byte key suitable for AES-256
+        """
+        # Use a fixed salt for consistent key derivation from the same string
+        fixed_salt = b"seedlings_key_derivation_salt_v1"
+        
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=fixed_salt,
+            iterations=100000,
+            backend=self.backend,
+        )
+        
+        return kdf.derive(key_string.encode())
+
     def encrypt_data(
         self,
         plaintext: str,

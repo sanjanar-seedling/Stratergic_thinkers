@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = "dev-secret-key-change-in-production"
     access_token_expire_minutes: int = 60 * 24  # 24 hours
+    encryption_key: str = "dev-encryption-key-32-bytes-min-change-in-production"  # Master key for encrypting tokens
 
     # LLM Provider: "ollama" (local/free), "openai" (cloud), or "groq" (fast cloud)
     llm_provider: str = "groq"
