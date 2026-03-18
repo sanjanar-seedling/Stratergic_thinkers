@@ -40,3 +40,5 @@ htmlcov/
 
 # Whisper models cache
 models/
+# SSL Certificates (local development only)
+*.pem

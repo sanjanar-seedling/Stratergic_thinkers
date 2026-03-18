@@ -11,7 +11,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import api from "@/services/api";
+import { api } from "@/services/api";
 
 // Service icons/colors for better visual distinction
 const SERVICE_CONFIG: Record<

@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     slack_client_id: str = ""
     slack_client_secret: str = ""
     slack_redirect_uri: str = "https://localhost:5173/oauth/callback"
+    slack_user_token: str = ""  # Local dev token for DM access
+    slack_bot_token: str = ""   # Local dev bot token
 
     # OAuth — Google (Calendar + Gmail)
     google_client_id: str = ""

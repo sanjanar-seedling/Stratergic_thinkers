@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, CheckCircle, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import api from "@/services/api";
+import { api } from "@/services/api";
 
 export function OAuthCallbackPage() {
   const [searchParams] = useSearchParams();

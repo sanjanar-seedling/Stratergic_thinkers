@@ -42,7 +42,7 @@ OAUTH_CONFIGS = {
     "slack": {
         "auth_url": "https://slack.com/oauth/v2/authorize",
         "token_url": "https://slack.com/api/oauth.v2.access",
-        "scopes": "channels:history,chat:write,groups:history,im:history,channels:read,groups:read,im:read,mpim:read",
+        "scopes": "channels:history,chat:write,groups:history,im:history,channels:read,groups:read,im:read,mpim:read,users:read,team:read",
     },
     "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -287,9 +287,16 @@ async def sync_integrations(
     for integration in user_integrations:
         service = integration["service"]
         access_token = integration.get("access_token", "")
+        
+        # For Slack: fallback to user token from .env if OAuth token is bot token
+        if service == "slack" and access_token.startswith("xoxb-"):
+            slack_user_token = getattr(settings, "slack_user_token", None)
+            if slack_user_token:
+                logger.info(f"Slack bot token detected, using user token from .env for better DM access")
+                access_token = slack_user_token
 
         try:
-            logger.info(f"Syncing {service} (token: {access_token[:10]}...)")
+            logger.info(f"Syncing {service} (token: {access_token[:20]}...)")
             texts = await _fetch_texts_from_service(service, access_token)
             logger.info(f"Sync {service}: got {len(texts)} texts")
         except Exception as e:
@@ -318,12 +325,26 @@ async def sync_integrations(
             events_created += 1
 
             try:
+                # Publish full event to Redis for event processor to consume
+                import json
                 await publish_event(
                     settings.redis_stream_name,
-                    {"event_id": event_id, "source": new_event["source"], "type": "reflection"},
+                    {
+                        "payload": json.dumps({
+                            "id": event_id,
+                            "user_id": uid,
+                            "source": new_event["source"],
+                            "event_type": "reflection",
+                            "text": text,  # Raw text before scrubbing
+                            "context": new_event["context"],
+                            "created_at": new_event["created_at"],
+                        }),
+                    }
                 )
-            except Exception:
-                pass  # Redis publish is non-critical
+                logger.info(f"Published event {event_id} to Redis stream for processing")
+            except Exception as e:
+                logger.error(f"Failed to publish event {event_id} to Redis: {e}")
+                # Non-critical - event is still stored in memory
 
         services_synced.append(service)
 
@@ -353,40 +374,94 @@ async def _fetch_texts_from_service(service: str, access_token: str) -> list[str
 
 
 async def _fetch_slack_messages(access_token: str) -> list[str]:
-    """Fetch recent DM messages from Slack."""
+    """Fetch recent messages from Slack (DMs, group DMs, and all channels the bot is a member of)."""
     import httpx
 
     texts = []
     headers = {"Authorization": f"Bearer {access_token}"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # Get IM (direct message) channels
-        resp = await client.get(
-            "https://slack.com/api/conversations.list",
-            headers=headers,
-            params={"types": "im", "limit": 5},
-        )
-        data = resp.json()
-        if not data.get("ok"):
-            logger.warning(f"Slack conversations.list error: {data.get('error')}")
-            return []
-
-        channels = data.get("channels", [])[:3]  # Limit to 3 DM threads
-        for channel in channels:
-            hist = await client.get(
-                "https://slack.com/api/conversations.history",
+        # Fetch from DM channels
+        try:
+            resp = await client.get(
+                "https://slack.com/api/conversations.list",
                 headers=headers,
-                params={"channel": channel["id"], "limit": 5},
+                params={"types": "im,mpim", "limit": 5},
             )
-            hist_data = hist.json()
-            if not hist_data.get("ok"):
-                continue
-            for msg in hist_data.get("messages", []):
-                text = msg.get("text", "").strip()
-                if text and len(text) > 10:
-                    texts.append(text)
+            data = resp.json()
+            logger.info(f"Slack conversations.list response (im/mpim): ok={data.get('ok')}, channels_count={len(data.get('channels', []))}")
+            
+            if data.get("ok"):
+                channels = data.get("channels", [])[:3]
+                logger.info(f"Slack: Processing {len(channels)} DM/Group DM channels")
+                
+                for channel in channels:
+                    channel_id = channel["id"]
+                    logger.info(f"Slack: Fetching history for DM {channel_id}")
+                    
+                    hist = await client.get(
+                        "https://slack.com/api/conversations.history",
+                        headers=headers,
+                        params={"channel": channel_id, "limit": 50},
+                    )
+                    hist_data = hist.json()
+                    
+                    if not hist_data.get("ok"):
+                        logger.warning(f"Slack history error for {channel_id}: {hist_data.get('error')}")
+                        continue
+                    
+                    messages = hist_data.get("messages", [])
+                    logger.info(f"Slack: DM {channel_id} has {len(messages)} messages")
+                    
+                    for msg in messages:
+                        text = msg.get("text", "").strip()
+                        if text and len(text) > 2:
+                            texts.append(text)
+        except Exception as e:
+            logger.error(f"Slack IM fetch failed: {e}", exc_info=True)
 
-    logger.info(f"Slack sync: fetched {len(texts)} messages")
+        # ALWAYS also fetch from public channels (not just when DMs are empty)
+        try:
+            resp = await client.get(
+                "https://slack.com/api/conversations.list",
+                headers=headers,
+                params={"types": "public_channel,private_channel", "limit": 10, "exclude_archived": True},
+            )
+            data = resp.json()
+            logger.info(f"Slack conversations.list response (public/private): ok={data.get('ok')}, channels_count={len(data.get('channels', []))}")
+            
+            if data.get("ok"):
+                channels = data.get("channels", [])[:5]
+                logger.info(f"Slack: Processing {len(channels)} public/private channels")
+                
+                for channel in channels:
+                    channel_name = channel.get("name", "unknown")
+                    channel_id = channel["id"]
+                    logger.info(f"Slack: Fetching history for channel #{channel_name} ({channel_id})")
+                    
+                    hist = await client.get(
+                        "https://slack.com/api/conversations.history",
+                        headers=headers,
+                        params={"channel": channel_id, "limit": 50},
+                    )
+                    hist_data = hist.json()
+                    if not hist_data.get("ok"):
+                        logger.warning(f"Slack history error for {channel_id}: {hist_data.get('error')}")
+                        continue
+                    
+                    messages = hist_data.get("messages", [])
+                    logger.info(f"Slack: Channel #{channel_name} has {len(messages)} messages")
+                    
+                    for msg in messages:
+                        text = msg.get("text", "").strip()
+                        if text and len(text) > 2:
+                            texts.append(text)
+        except Exception as e:
+            logger.error(f"Slack channel fetch failed: {e}", exc_info=True)
+
+    logger.info(f"Slack sync: FINAL - fetched {len(texts)} messages total")
+    if not texts:
+        logger.warning("Slack sync returned 0 messages. Make sure the bot is added to channels with recent messages.")
     return texts
 
 
